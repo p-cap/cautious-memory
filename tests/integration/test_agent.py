@@ -1,4 +1,4 @@
-"""API contract checks that do not make a Foundry request."""
+"""API contract checks that do not make a Gemini request."""
 
 import os
 

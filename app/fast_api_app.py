@@ -21,13 +21,121 @@ from app.agent import agent_label, generate_draft
 
 logger = logging.getLogger("studio_builder")
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-IMPORT_ROOT = PROJECT_ROOT / ".local-imports"
+
+
+def _import_root() -> Path:
+    """Choose a writable import directory for local and Cloud Run execution."""
+    default = "/tmp/signal-studio-imports" if os.getenv("K_SERVICE") else str(PROJECT_ROOT / ".local-imports")
+    return Path(os.getenv("IMPORT_ROOT", default))
+
+
+IMPORT_ROOT = _import_root()
+IMPORT_BUCKET = os.getenv("IMPORT_BUCKET", "").strip()
+IMPORT_OBJECT_PREFIX = "imports"
 MAX_ARCHIVE_BYTES = 25 * 1024 * 1024
 MAX_EXTRACTED_BYTES = 100 * 1024 * 1024
 MAX_ARCHIVE_FILES = 2_000
 MAX_SITE_CONTEXT_CHARS = 6_000
 LOCAL_PREVIEW_ORIGIN = os.getenv("LOCAL_PREVIEW_ORIGIN", "http://127.0.0.1:8000").rstrip("/")
 ACTIVE_IMPORT_FILE = IMPORT_ROOT / ".active-import"
+BUILDER_DIST = PROJECT_ROOT / "frontend" / "dist"
+
+
+def _workspace_prefix(import_id: str) -> str:
+    return f"{IMPORT_OBJECT_PREFIX}/{import_id}/"
+
+
+def _is_persisted_workspace_path(path: Path) -> bool:
+    """Avoid uploading dependency caches and the original, untrusted ZIP."""
+    ignored_parts = {"node_modules", ".npm", ".git", ".svelte-kit"}
+    return path.name != "project.zip" and not any(part in ignored_parts for part in path.parts)
+
+
+def _workspace_bucket():
+    """Create the private workspace bucket client only when persistence is enabled."""
+    if not IMPORT_BUCKET:
+        return None
+    # Import lazily so local unit tests do not require Google Cloud libraries.
+    from google.cloud import storage
+
+    return storage.Client().bucket(IMPORT_BUCKET)
+
+
+def _persist_workspace(import_id: str) -> None:
+    """Upload a built import workspace for use by any Cloud Run instance."""
+    bucket = _workspace_bucket()
+    if bucket is None:
+        return
+    workspace = IMPORT_ROOT / import_id
+    if not (workspace / "source").is_dir():
+        raise FileNotFoundError(f"Workspace {import_id} is not available to persist.")
+    prefix = _workspace_prefix(import_id)
+    # Replacing the complete prefix prevents stale build files after a new draft.
+    for blob in bucket.list_blobs(prefix=prefix):
+        blob.delete()
+    for file_path in workspace.rglob("*"):
+        if not file_path.is_file():
+            continue
+        relative = file_path.relative_to(workspace)
+        if not _is_persisted_workspace_path(relative):
+            continue
+        bucket.blob(f"{prefix}{relative.as_posix()}").upload_from_filename(file_path)
+
+
+def _hydrate_workspace(import_id: str) -> bool:
+    """Restore a persisted workspace into the instance-local working directory."""
+    workspace = IMPORT_ROOT / import_id
+    if (workspace / "source").is_dir():
+        return True
+    bucket = _workspace_bucket()
+    if bucket is None:
+        return False
+
+    prefix = _workspace_prefix(import_id)
+    temporary = IMPORT_ROOT / f".{import_id}-{uuid4().hex}.hydrate"
+    found = False
+    try:
+        for blob in bucket.list_blobs(prefix=prefix):
+            relative_name = blob.name.removeprefix(prefix)
+            relative = PurePosixPath(relative_name)
+            if not relative_name or relative.is_absolute() or ".." in relative.parts:
+                continue
+            destination = temporary.joinpath(*relative.parts)
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            blob.download_to_filename(destination)
+            found = True
+        if not found or not (temporary / "source").is_dir():
+            return False
+        IMPORT_ROOT.mkdir(parents=True, exist_ok=True)
+        # Another request may already have hydrated this workspace. Its copy is
+        # equivalent, so retain it and discard our temporary download.
+        if (workspace / "source").is_dir():
+            return True
+        temporary.replace(workspace)
+        return True
+    finally:
+        shutil.rmtree(temporary, ignore_errors=True)
+
+
+async def _ensure_workspace(import_id: str) -> bool:
+    """Hydrate an import before using it, including after Cloud Run scales."""
+    try:
+        return await asyncio.to_thread(_hydrate_workspace, import_id)
+    except Exception as error:
+        logger.exception("Could not hydrate import workspace %s", import_id)
+        raise HTTPException(status_code=503, detail="The imported project workspace is temporarily unavailable.") from error
+
+
+async def _save_workspace(import_id: str) -> None:
+    """Persist an import after a successful import, preview, or local apply."""
+    try:
+        await asyncio.to_thread(_persist_workspace, import_id)
+    except Exception as error:
+        logger.exception("Could not persist import workspace %s", import_id)
+        raise HTTPException(
+            status_code=502,
+            detail="The imported project was built, but its private preview workspace could not be saved.",
+        ) from error
 
 app = FastAPI(title="Studio Builder API", version="0.1.0")
 app.add_middleware(
@@ -112,9 +220,12 @@ JSON code block in this exact form:
 ```
 
 Rules for the JSON:
-- Include one to three changes.
+- Include one to three changes. Keep each change focused on one visible
+  element, even when the user's request spans multiple components.
 - Use only existing files under src/ or static/.
 - The search text must be exact and visible in the supplied snapshot.
+- If a file needs multiple edits, return their independent exact replacements
+  in the order they should be applied.
 - Do not modify package files, lockfiles, configuration, credentials, or dependencies.
 - For an article, create a new file only under src/routes/articles/ and update
   the existing articles index in the same response.
@@ -132,7 +243,14 @@ async def healthcheck() -> dict[str, str]:
 
 @app.post("/api/drafts", response_model=DraftResponse)
 async def create_draft(request: DraftRequest) -> DraftResponse:
-    """Generate a proposal through Foundry, without granting it site tools."""
+    """Generate a Gemini proposal without granting it site tools."""
+    if request.import_id:
+        try:
+            import_id = str(UUID(request.import_id))
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail="Invalid local import reference.") from error
+        if not await _ensure_workspace(import_id):
+            raise HTTPException(status_code=404, detail="The imported project is no longer available.")
     site_context = _site_context(request.import_id, request.site_name, request.page)
     prompt = f"""{DRAFT_REQUEST_INSTRUCTIONS}
 
@@ -146,11 +264,11 @@ Requested change: {request.request}"""
     try:
         proposal = await generate_draft(prompt)
     except Exception as error:
-        logger.exception("Foundry draft request failed for agent %s", agent_label())
-        raise HTTPException(status_code=502, detail=f"Foundry could not create a local draft: {error}") from error
+        logger.exception("Gemini draft request failed for agent %s", agent_label())
+        raise HTTPException(status_code=502, detail=f"Gemini could not create a local draft: {error}") from error
 
     if not proposal:
-        raise HTTPException(status_code=502, detail="Foundry returned an empty draft proposal.")
+        raise HTTPException(status_code=502, detail="Gemini returned an empty draft proposal.")
     change_match = re.search(r"```json\s*\n(?P<changes>.*?)```", proposal, flags=re.DOTALL | re.IGNORECASE)
     changes: list[LocalChange] = []
     if change_match:
@@ -164,13 +282,13 @@ Requested change: {request.request}"""
     if not changes:
         raise HTTPException(
             status_code=502,
-            detail="Foundry returned a proposal without a valid previewable local change. Please try the request again.",
+            detail="Gemini returned a proposal without a valid previewable local change. Please try the request again.",
         )
     if _has_ineffective_inherited_visual_change(request.request, changes):
         raise HTTPException(
             status_code=422,
             detail=(
-                "Foundry proposed an inherited visual style that is likely overridden by the imported site. "
+                "Gemini proposed an inherited visual style that is likely overridden by the imported site. "
                 "Ask it to update the exact visible elements and their explicit color classes instead."
             ),
         )
@@ -223,7 +341,7 @@ def _project_root(destination: Path) -> Path:
 
 
 def _site_context(import_id: str | None, site_name: str | None, selected_page: str = "") -> str:
-    """Create a small, read-only project snapshot for a Foundry draft request."""
+    """Create a small, read-only project snapshot for a Gemini draft request."""
     if not import_id:
         return f"Site name: {site_name or 'No site imported yet'}\nNo source snapshot is available."
     try:
@@ -281,6 +399,15 @@ def _selected_page_file(route_root: Path, selected_page: str) -> Path | None:
     return candidate if candidate.is_file() else None
 
 
+def _public_origin(request: Request) -> str:
+    """Use the proxied public host on Cloud Run, with a local fallback."""
+    host = request.headers.get("x-forwarded-host") or request.headers.get("host")
+    if not host:
+        return LOCAL_PREVIEW_ORIGIN
+    scheme = request.headers.get("x-forwarded-proto", request.url.scheme).split(",")[0].strip()
+    return f"{scheme}://{host}"
+
+
 def _has_ineffective_inherited_visual_change(request_text: str, changes: list[LocalChange]) -> bool:
     """Reject wrapper-only colour/font edits that cannot reliably alter the UI."""
     visual_request = re.search(r"\b(color|colour|font|text)\b", request_text, flags=re.IGNORECASE)
@@ -329,9 +456,18 @@ def _rewrite_preview_asset_paths(output_root: Path, preview_base: str) -> None:
             .replace("'./_app/", f"'{preview_base}/_app/")
             .replace('"../_app/', f'"{preview_base}/_app/')
             .replace("'../_app/", f"'{preview_base}/_app/")
+            .replace('"_app/', f'"{preview_base}/_app/')
+            .replace("'_app/", f"'{preview_base}/_app/")
             .replace("url(/_app/", f"url({preview_base}/_app/")
             .replace("url(./_app/", f"url({preview_base}/_app/")
             .replace("url(../_app/", f"url({preview_base}/_app/")
+            .replace("url(_app/", f"url({preview_base}/_app/")
+            .replace('url("/_app/', f'url("{preview_base}/_app/')
+            .replace("url('/_app/", f"url('{preview_base}/_app/")
+            .replace('url("./_app/', f'url("{preview_base}/_app/')
+            .replace("url('./_app/", f"url('{preview_base}/_app/")
+            .replace('url("../_app/', f'url("{preview_base}/_app/')
+            .replace("url('../_app/", f"url('{preview_base}/_app/")
         )
         if file_path.suffix == ".html":
             # Static SvelteKit exports contain links such as href="/whoami".
@@ -384,13 +520,19 @@ async def _run_build(project_root: Path, destination: Path, *, force: bool = Fal
     safe_env = {"PATH": os.environ.get("PATH", ""), "HOME": str(destination), "npm_config_ignore_scripts": "true", "npm_config_audit": "false", "npm_config_fund": "false"}
     install_command = ["npm", "ci", "--ignore-scripts"] if (project_root / "package-lock.json").exists() else ["npm", "install", "--ignore-scripts"]
     for command in (install_command, ["npm", "run", "build"]):
-        process = await asyncio.create_subprocess_exec(
-            *command,
-            cwd=project_root,
-            env=safe_env,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.STDOUT,
-        )
+        try:
+            process = await asyncio.create_subprocess_exec(
+                *command,
+                cwd=project_root,
+                env=safe_env,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT,
+            )
+        except OSError as error:
+            raise HTTPException(
+                status_code=422,
+                detail="The preview environment cannot run npm to build this imported project.",
+            ) from error
         output, _ = await process.communicate()
         if process.returncode != 0:
             build_output = output.decode(errors="replace").strip()[-1_200:]
@@ -409,39 +551,53 @@ async def _run_build(project_root: Path, destination: Path, *, force: bool = Fal
 
 
 def _apply_local_changes(project_root: Path, changes: list[LocalChange]) -> None:
-    """Apply exact replacements and narrowly scoped new post routes locally."""
+    """Apply exact replacements, including sequential edits to one source file."""
     allowed_suffixes = {".svelte", ".css", ".js", ".ts"}
     if not 1 <= len(changes) <= 3:
         raise HTTPException(status_code=422, detail="A local proposal must contain between one and three source changes.")
-    paths: set[PurePosixPath] = set()
-    operations: list[tuple[Path, str, LocalChange]] = []
+    planned_contents: dict[Path, str] = {}
+    created_paths: set[Path] = set()
     for change in changes:
         path = PurePosixPath(change.path)
-        if path.is_absolute() or ".." in path.parts or path.parts[0] not in {"src", "static"} or path.suffix not in allowed_suffixes:
+        if (
+            path.is_absolute()
+            or ".." in path.parts
+            or not path.parts
+            or path.parts[0] not in {"src", "static"}
+            or path.suffix not in allowed_suffixes
+        ):
             raise HTTPException(status_code=422, detail="Local changes may modify only source files under src/ or static/.")
-        if path in paths:
-            raise HTTPException(status_code=422, detail="A local proposal may update each source file only once.")
-        paths.add(path)
         file_path = project_root / path
         if change.action == "create":
             if not (path.parts[:2] == ("src", "routes") and path.suffix == ".svelte" and "articles" in path.parts):
                 raise HTTPException(status_code=422, detail="New files are allowed only as Svelte article routes under src/routes/articles/.")
-            if file_path.exists() or not change.content.strip():
+            if file_path.exists() or file_path in planned_contents or file_path in created_paths or not change.content.strip():
                 raise HTTPException(status_code=422, detail=f"The new post file is invalid or already exists: {path}")
-            operations.append((file_path, "", change))
+            planned_contents[file_path] = change.content
+            created_paths.add(file_path)
             continue
         if not file_path.is_file() or not change.search:
             raise HTTPException(status_code=422, detail=f"Local updates must match an existing file: {path}")
-        content = file_path.read_text(encoding="utf-8")
+        # Multiple exact edits to a component are valid. Each subsequent edit
+        # is matched against the preceding planned result, not disk state.
+        content = planned_contents.get(file_path)
+        if content is None:
+            content = file_path.read_text(encoding="utf-8")
         if content.count(change.search) != 1:
-            raise HTTPException(status_code=422, detail=f"The proposed text no longer matches {path}. Create a new proposal.")
-        operations.append((file_path, content, change))
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"The proposed text no longer matches {path}; the imported source changed after this draft was created. "
+                    "Cancel this stale draft and create a new proposal."
+                ),
+            )
+        planned_contents[file_path] = content.replace(change.search, change.replace, 1)
 
     # Validate every operation before writing anything, so a rejected proposal
     # cannot leave a partially applied local edit behind.
-    for file_path, content, change in operations:
+    for file_path, content in planned_contents.items():
         file_path.parent.mkdir(parents=True, exist_ok=True)
-        file_path.write_text(change.content if change.action == "create" else content.replace(change.search, change.replace, 1), encoding="utf-8")
+        file_path.write_text(content, encoding="utf-8")
 
 
 def _post_page_source(title: str, excerpt: str, body: str, published_at: str) -> str:
@@ -513,6 +669,8 @@ async def create_post_draft(request: PostDraftRequest) -> PostDraftResponse:
         import_id = str(UUID(request.import_id))
     except ValueError as error:
         raise HTTPException(status_code=422, detail="Invalid local import reference.") from error
+    if not await _ensure_workspace(import_id):
+        raise HTTPException(status_code=404, detail="The imported project is no longer available.")
     source_root = IMPORT_ROOT / import_id / "source"
     project_root = _project_root(source_root)
     index_path = project_root / "src/routes/articles/+page.svelte"
@@ -550,6 +708,7 @@ async def import_project(request: Request, x_project_filename: str = Header(defa
         raise HTTPException(status_code=413, detail="The archive exceeds the 25 MB local-import limit.")
 
     import_id = str(uuid4())
+    IMPORT_ROOT.mkdir(parents=True, exist_ok=True)
     destination = IMPORT_ROOT / import_id
     destination.mkdir(parents=True, exist_ok=False)
     archive_path = destination / "project.zip"
@@ -565,19 +724,20 @@ async def import_project(request: Request, x_project_filename: str = Header(defa
     imported = _inspect_project(project_root, import_id)
     preview_path = await _run_build(project_root, destination)
     ACTIVE_IMPORT_FILE.write_text(import_id, encoding="utf-8")
+    await _save_workspace(import_id)
     # The trailing slash is required for static SvelteKit builds that emit
     # relative asset URLs such as "./_app/...". Without it, browsers resolve
     # those assets as /previews/_app instead of inside this specific preview.
     # Keep the iframe on the local preview server itself. This avoids relying
     # on a Vite proxy (which otherwise treats preview routes as builder routes
     # after a navigation) and lets static internal links resolve consistently.
-    imported.preview_url = f"{LOCAL_PREVIEW_ORIGIN}/previews/{import_id}/"
+    imported.preview_url = f"{_public_origin(request)}/previews/{import_id}/"
     imported.preview_status = "ready"
     return imported
 
 
 @app.post("/api/changes/apply", response_model=ApplyChangeResponse)
-async def apply_local_change(request: ApplyChangeRequest) -> ApplyChangeResponse:
+async def apply_local_change(http_request: Request, request: ApplyChangeRequest) -> ApplyChangeResponse:
     """Apply agent-proposed structured source changes locally, then rebuild."""
     try:
         import_id = str(UUID(request.import_id))
@@ -585,17 +745,18 @@ async def apply_local_change(request: ApplyChangeRequest) -> ApplyChangeResponse
         raise HTTPException(status_code=422, detail="Invalid local import reference.") from error
     destination = IMPORT_ROOT / import_id
     source_root = destination / "source"
-    if not source_root.is_dir():
+    if not await _ensure_workspace(import_id):
         raise HTTPException(status_code=404, detail="The imported project is no longer available locally.")
     project_root = _project_root(source_root)
     _apply_local_changes(project_root, request.changes)
     await _run_build(project_root, destination, force=True)
     ACTIVE_IMPORT_FILE.write_text(import_id, encoding="utf-8")
-    return ApplyChangeResponse(preview_url=f"{LOCAL_PREVIEW_ORIGIN}/previews/{import_id}/")
+    await _save_workspace(import_id)
+    return ApplyChangeResponse(preview_url=f"{_public_origin(http_request)}/previews/{import_id}/")
 
 
 @app.post("/api/changes/preview", response_model=PreviewChangeResponse)
-async def preview_local_change(request: ApplyChangeRequest) -> PreviewChangeResponse:
+async def preview_local_change(http_request: Request, request: ApplyChangeRequest) -> PreviewChangeResponse:
     """Build a disposable copy of a proposed edit without changing imported source."""
     try:
         import_id = str(UUID(request.import_id))
@@ -603,7 +764,7 @@ async def preview_local_change(request: ApplyChangeRequest) -> PreviewChangeResp
         raise HTTPException(status_code=422, detail="Invalid local import reference.") from error
     destination = IMPORT_ROOT / import_id
     source_root = destination / "source"
-    if not source_root.is_dir():
+    if not await _ensure_workspace(import_id):
         raise HTTPException(status_code=404, detail="The imported project is no longer available locally.")
 
     preview_id = str(uuid4())
@@ -626,9 +787,11 @@ async def preview_local_change(request: ApplyChangeRequest) -> PreviewChangeResp
         shutil.rmtree(preview_source.parent, ignore_errors=True)
         raise HTTPException(status_code=500, detail="Could not prepare the disposable local preview.") from error
 
+    await _save_workspace(import_id)
+
     return PreviewChangeResponse(
         preview_id=preview_id,
-        preview_url=f"{LOCAL_PREVIEW_ORIGIN}/change-previews/{import_id}/{preview_id}/",
+        preview_url=f"{_public_origin(http_request)}/change-previews/{import_id}/{preview_id}/",
     )
 
 
@@ -636,9 +799,19 @@ async def preview_local_change(request: ApplyChangeRequest) -> PreviewChangeResp
 @app.get("/previews/{import_id}/{asset_path:path}")
 async def serve_preview(import_id: str, asset_path: str = "") -> FileResponse:
     """Serve only static files emitted from a successful imported-project build."""
-    source_root = IMPORT_ROOT / import_id / "source"
-    if not source_root.exists():
+    # All production import IDs are UUIDs. Allow an already-local simple name
+    # too, which keeps the static-preview handler usable by local development.
+    if "/" in import_id or import_id in {"", ".", ".."}:
         raise HTTPException(status_code=404, detail="Preview not found.")
+    source_root = IMPORT_ROOT / import_id / "source"
+    if not source_root.is_dir():
+        try:
+            safe_import_id = str(UUID(import_id))
+        except ValueError as error:
+            raise HTTPException(status_code=404, detail="Preview not found.") from error
+        if not await _ensure_workspace(safe_import_id):
+            raise HTTPException(status_code=404, detail="Preview not found.")
+        source_root = IMPORT_ROOT / safe_import_id / "source"
     try:
         project_root = _project_root(source_root)
     except HTTPException as error:
@@ -657,6 +830,8 @@ async def serve_preview(import_id: str, asset_path: str = "") -> FileResponse:
     if not candidate.is_file() and asset_path and not Path(asset_path).suffix:
         candidate = (output_root / f"{asset_path.rstrip('/')}.html").resolve()
     if not candidate.is_file():
+        if asset_path:
+            raise HTTPException(status_code=404, detail="Preview asset not found.")
         candidate = output_root / "index.html"
     return FileResponse(candidate)
 
@@ -670,6 +845,8 @@ async def serve_change_preview(import_id: str, preview_id: str, asset_path: str 
         safe_preview_id = str(UUID(preview_id))
     except ValueError as error:
         raise HTTPException(status_code=404, detail="Change preview not found.") from error
+    if not await _ensure_workspace(safe_import_id):
+        raise HTTPException(status_code=404, detail="Change preview not found.")
     output_root = _preview_output_root(IMPORT_ROOT / safe_import_id / ".change-previews" / safe_preview_id / "source")
     if output_root is None:
         raise HTTPException(status_code=404, detail="Change preview not found.")
@@ -681,16 +858,56 @@ async def serve_change_preview(import_id: str, preview_id: str, asset_path: str 
     if not candidate.is_file() and asset_path and not Path(asset_path).suffix:
         candidate = (output_root / f"{asset_path.rstrip('/')}.html").resolve()
     if not candidate.is_file():
+        if asset_path:
+            raise HTTPException(status_code=404, detail="Change preview asset not found.")
         candidate = output_root / "index.html"
     return FileResponse(candidate)
 
 
+@app.get("/_app/{asset_path:path}", include_in_schema=False)
+async def serve_unscoped_preview_asset(request: Request, asset_path: str) -> FileResponse:
+    """Recover SvelteKit assets whose static build did not retain preview base."""
+    referer = request.headers.get("referer", "")
+    match = re.search(r"/previews/(?P<import_id>[0-9a-f-]{36})(?:/|$)", referer, flags=re.IGNORECASE)
+    if not match:
+        raise HTTPException(status_code=404, detail="Preview asset not found.")
+    try:
+        import_id = str(UUID(match.group("import_id")))
+    except ValueError as error:
+        raise HTTPException(status_code=404, detail="Preview asset not found.") from error
+    if not await _ensure_workspace(import_id):
+        raise HTTPException(status_code=404, detail="Preview asset not found.")
+    output_root = _preview_output_root(IMPORT_ROOT / import_id / "source")
+    if output_root is None:
+        raise HTTPException(status_code=404, detail="Preview has not finished building.")
+    candidate = (output_root / "_app" / asset_path).resolve()
+    assets_root = (output_root / "_app").resolve()
+    if assets_root not in candidate.parents or not candidate.is_file():
+        raise HTTPException(status_code=404, detail="Preview asset not found.")
+    return FileResponse(candidate)
+
+
+@app.get("/assets/{asset_path:path}", include_in_schema=False)
+async def serve_builder_asset(asset_path: str) -> FileResponse:
+    """Serve immutable Vite assets for the production builder UI."""
+    assets_root = BUILDER_DIST / "assets"
+    candidate = (assets_root / asset_path).resolve()
+    if assets_root.resolve() not in candidate.parents or not candidate.is_file():
+        raise HTTPException(status_code=404, detail="Builder asset not found.")
+    return FileResponse(candidate, headers={"Cache-Control": "public, max-age=31536000, immutable"})
+
+
 @app.get("/{route_path:path}", include_in_schema=False)
-async def redirect_unscoped_preview_route(route_path: str) -> RedirectResponse:
+async def redirect_unscoped_preview_route(route_path: str):
     """Recover routes that SvelteKit hydration navigates outside its preview base."""
+    index = BUILDER_DIST / "index.html"
+    if not route_path and index.is_file():
+        return FileResponse(index, headers={"Cache-Control": "no-cache"})
     import_id = _active_import_id()
     if import_id is None:
-        raise HTTPException(status_code=404, detail="No local preview is active.")
+        if index.is_file():
+            return FileResponse(index, headers={"Cache-Control": "no-cache"})
+        raise HTTPException(status_code=404, detail="Builder UI has not been built.")
     source_root = IMPORT_ROOT / import_id / "source"
     project_root = _project_root(source_root)
     output_root = next(

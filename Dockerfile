@@ -12,9 +12,27 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+FROM node:24-slim AS frontend-build
+
+WORKDIR /ui
+
+COPY frontend/package.json frontend/package-lock.json ./
+RUN npm ci
+
+COPY frontend ./
+RUN npm run build
+
+
 FROM python:3.12-slim
 
 RUN pip install --no-cache-dir uv==0.8.13
+
+# Imported Svelte projects are built inside the running service. Copy the same
+# Node 24 runtime used for the builder UI so those disposable builds can run.
+COPY --from=frontend-build /usr/local/bin/node /usr/local/bin/node
+COPY --from=frontend-build /usr/local/lib/node_modules /usr/local/lib/node_modules
+RUN ln -s ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
+ && ln -s ../lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx
 
 WORKDIR /code
 
@@ -22,7 +40,11 @@ COPY ./pyproject.toml ./README.md ./uv.lock* ./
 
 COPY ./app ./app
 
-RUN uv sync --frozen
+# Resolve the production SDK during the image build. This keeps the container
+# aligned with pyproject.toml when a Google Gen AI SDK upgrade is required.
+RUN uv sync --no-dev
+
+COPY --from=frontend-build /ui/dist ./frontend/dist
 
 ARG COMMIT_SHA=""
 ENV COMMIT_SHA=${COMMIT_SHA}
