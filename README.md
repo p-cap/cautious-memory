@@ -1,17 +1,20 @@
-# Studio — local website-builder prototype
+# Signal Studio — Svelte website builder & tech blogger
 
-This is a local-only prototype for proposing Svelte website changes through a
-chat interface. Gemini creates concise draft proposals; the app does not read
-or modify a website repository, create commits, upload files, or deploy.
+Signal Studio is a local-first Svelte website builder and lightweight tech-blog
+authoring app. Import a Svelte or SvelteKit ZIP, use Gemini through a chat
+interface to propose changes, preview each change in an isolated local build,
+and apply only the approved change to the imported local copy.
+
+![Signal Studio interface](docs/studio-builder.svg)
 
 ## What it includes
 
-- Svelte UI with page selection, chat, a concept preview, and a local-draft list
-- FastAPI endpoint at `POST /api/drafts`
-- Google ADK agent powered by Gemini Enterprise Agent Platform
-- Application Default Credentials (ADC) only; no API-key code path
-- Explicit draft-only guardrails in the agent instruction
-- ZIP import for local, read-only Svelte/SvelteKit project inspection
+- Svelte UI with navigation, Gemini chat, route detection, proposal review, and a resizable local preview
+- ZIP import for local Svelte/SvelteKit project inspection and preview builds
+- AI-assisted Svelte change proposals with disposable, isolated change previews
+- A Posts CMS that creates local blog post drafts with title, slug, excerpt, body, and publication date/time
+- Explicit **Preview change** then **Apply locally** workflow; no automatic publishing
+- FastAPI backend and Gemini integration using Application Default Credentials (ADC) only
 
 ## Configure ADC
 
@@ -61,11 +64,13 @@ Open the displayed Vite URL, normally `http://localhost:5173`. Vite proxies
 ## Import a Svelte site
 
 Use **Import a project** in the left sidebar and select a ZIP archive. Imports
-are extracted only into `.local-imports/`, which is ignored by Git. The
-prototype validates archive paths and size, detects the Svelte framework and
-routes, then builds only that extracted copy and displays the generated static
-site automatically in the right-hand preview. It never edits the uploaded
-source archive or an original local project.
+are extracted only into `.local-imports/`, which is ignored by Git. The app
+validates archive paths and size, detects the Svelte framework and routes, then
+builds the extracted copy and shows it in the right-hand preview.
+
+If the imported project has an articles, posts, or blog route, select **Posts**
+to create a blog draft. The resulting local source change can be previewed at
+the articles route before it is applied.
 
 Try the supplied sample archive:
 
@@ -93,6 +98,6 @@ agents-cli eval run --evalset tests/eval/evalsets/basic.evalset.json
 
 ## Boundaries
 
-This prototype intentionally does not include GitHub, Cloud Storage, site-file
-tools, preview deployments, or a publish button. Those integrations can be
-added in a later, separately approved phase.
+This prototype intentionally does not include GitHub, Cloud Storage, remote
+preview deployments, commits, pull requests, or a publish button. Applying a
+change modifies only the local imported copy after a successful preview.

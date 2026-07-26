@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="700" viewBox="0 0 1200 700" role="img" aria-labelledby="title desc">
+  <title id="title">Signal Studio Svelte website builder</title>
+  <desc id="desc">A three-panel local website builder with navigation, Gemini chat, and a local site preview.</desc>
+  <rect width="1200" height="700" fill="#f5f2e8"/>
+  <g stroke="#181818" stroke-width="3" font-family="Arial, Helvetica, sans-serif" fill="#fdfcf7">
+    <rect x="10" y="10" width="180" height="680"/><rect x="190" y="10" width="510" height="680"/><rect x="700" y="10" width="490" height="680"/>
+    <path d="M190 82H700M700 82H1190M190 600H700"/>
+    <rect x="28" y="28" width="142" height="28" fill="#ffe86b"/><rect x="28" y="104" width="142" height="34" fill="#ffe86b"/>
+    <rect x="28" y="202" width="142" height="50" stroke-dasharray="5 4"/>
+    <rect x="238" y="106" width="420" height="60"/><rect x="238" y="615" width="420" height="48"/>
+    <rect x="722" y="104" width="446" height="252" stroke-dasharray="6 4"/>
+    <rect x="722" y="378" width="446" height="104"/><rect x="1080" y="30" width="82" height="24" fill="#ffe86b"/>
+    <rect x="596" y="30" width="78" height="24"/><rect x="244" y="572" width="148" height="22"/><rect x="402" y="572" width="154" height="22"/><rect x="566" y="572" width="104" height="22"/>
+  </g>
+  <g fill="#181818" font-family="Arial, Helvetica, sans-serif">
+    <text x="40" y="48" font-size="15" font-weight="800">S  SIGNAL STUDIO</text>
+    <text x="28" y="80" font-size="9" font-weight="800">OPERATING SYSTEM FOR</text><text x="28" y="92" font-size="9" font-weight="800">SITE CHANGES</text>
+    <text x="46" y="126" font-size="13" font-weight="800">⌂  Home</text><text x="46" y="162" font-size="13">□  About</text><text x="46" y="190" font-size="13" fill="#8d8b82">▤  Posts</text>
+    <text x="40" y="222" font-size="11" font-weight="800">Import a project</text><text x="40" y="239" font-size="9" fill="#6d6b64">Choose a Svelte/SvelteKit ZIP</text>
+    <text x="214" y="31" font-size="9" font-weight="800">GEMINI · ADC</text><text x="214" y="61" font-size="23" font-weight="900">Build your Svelte site with chat.</text><text x="608" y="46" font-size="9" font-weight="800">LOCAL DRAFTS ONLY</text>
+    <text x="252" y="130" font-size="12">Describe a Svelte change and I’ll prepare a local draft.</text><text x="252" y="149" font-size="12">Nothing is applied or published automatically.</text>
+    <text x="724" y="58" font-size="11" fill="#66635b">No project imported</text><text x="1091" y="46" font-size="9" font-weight="800">NO DEPLOY</text>
+    <text x="822" y="210" font-size="18" font-weight="900">Import a Svelte project to</text><text x="852" y="234" font-size="18" font-weight="900">start previewing</text><text x="824" y="257" font-size="11" fill="#6d6b64">Your local preview appears here after import.</text>
+    <text x="736" y="403" font-size="9" font-weight="800">PROPOSALS</text><text x="736" y="426" font-size="16" font-weight="900">Local drafts</text><text x="736" y="458" font-size="11" fill="#6d6b64">Gemini proposals appear here for review.</text>
+    <text x="256" y="587" font-size="9" font-weight="800">MAKE THE HERO FEEL MORE PREMIUM</text><text x="414" y="587" font-size="9" font-weight="800">ADD A TESTIMONIAL SECTION</text><text x="578" y="587" font-size="9" font-weight="800">TIGHTEN NAVIGATION</text><text x="252" y="645" font-size="12" fill="#6d6b64">Import a Svelte project to enable chat</text>
+  </g>
+</svg>
