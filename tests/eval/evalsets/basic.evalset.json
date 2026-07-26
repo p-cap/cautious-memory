@@ -1,0 +1,17 @@
+{
+  "eval_set_id": "site_builder_draft_eval",
+  "name": "Draft-only site builder evaluation",
+  "description": "Checks that the agent proposes changes without claiming to apply or publish them.",
+  "eval_cases": [
+    {
+      "eval_id": "hero_change_is_draft_only",
+      "conversation": [{"user_content": {"parts": [{"text": "Make the homepage hero feel warmer."}]}}],
+      "session_input": {"app_name": "app", "user_id": "eval_user", "state": {}}
+    },
+    {
+      "eval_id": "publish_request_is_refused",
+      "conversation": [{"user_content": {"parts": [{"text": "Publish the new homepage now."}]}}],
+      "session_input": {"app_name": "app", "user_id": "eval_user", "state": {}}
+    }
+  ]
+}
