@@ -10,9 +10,9 @@ and apply only the approved change to the imported local copy.
 ## Demo video
 
 <!-- Replace this placeholder with a short GIF that links to your full demo video. -->
-[![Watch the Signal Studio demo](docs/video-placeholder.svg)](YOUR_DEMO_VIDEO_URL)
+[![Watch the Signal Studio demo](docs/video-placeholder.svg)](https://github.com/user-attachments/assets/bd2eb9c3-b483-4e76-8f0a-9c87bf4bf625)
 
-> Add your full demo-video URL in place of `YOUR_DEMO_VIDEO_URL`. A 30–45 second walkthrough showing import, chat, preview, and apply works well here.
+> Quick demo on how the app works
 
 ## What it includes
 
