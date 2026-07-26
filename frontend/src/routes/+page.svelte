@@ -7,6 +7,8 @@
   let previewWidth = 560;
   let applying = null;
   let previewing = null;
+  let previewLoading = false;
+  let previewLoadingTitle = 'Loading preview';
   let stagedPreview = null;
   let drafts = [];
   let postTitle = '';
@@ -149,15 +151,19 @@
   async function applyDraft(draft) {
     if (!importedSite?.import_id || !draft.changes?.length || draft.applied || stagedPreview?.draft !== draft || applying) return;
     applying = draft;
+    previewLoadingTitle = 'Loading local change';
+    previewLoading = true;
     try {
       const response = await fetch('/api/changes/apply', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ import_id: importedSite.import_id, changes: draft.changes }) });
       const body = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(body.detail || 'The local change could not be applied.');
       importedSite = { ...importedSite, preview_url: `${body.preview_url}?updated=${Date.now()}` };
       stagedPreview = null;
+      previewLoading = true;
       drafts = drafts.map((item) => item === draft ? { ...item, applied: true } : item);
       messages = [...messages, { role: 'assistant', text: 'Applied the change to the local imported source and rebuilt its preview. Nothing was committed or published.' }];
     } catch (error) {
+      previewLoading = false;
       messages = [...messages, { role: 'assistant', text: error instanceof Error ? error.message : 'The local change could not be applied.' }];
     } finally { applying = null; }
   }
@@ -165,6 +171,8 @@
   async function previewDraft(draft, previewPath = '') {
     if (!importedSite?.import_id || !draft.changes?.length || previewing) return;
     previewing = draft;
+    previewLoadingTitle = 'Loading preview change';
+    previewLoading = true;
     try {
       const response = await fetch('/api/changes/preview', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ import_id: importedSite.import_id, changes: draft.changes }) });
       const body = await response.json().catch(() => ({}));
@@ -172,9 +180,11 @@
       const baseUrl = body.preview_url.replace(/\/$/, '');
       const route = previewPath ? `/${previewPath.replace(/^\/+|\/+$/g, '')}` : '';
       stagedPreview = { draft, url: `${baseUrl}${route}/?previewed=${Date.now()}` };
+      previewLoading = true;
       messages = [...messages, { role: 'assistant', text: 'Built a disposable local preview of this proposal. Review it on the right before applying anything.' }];
       return true;
     } catch (error) {
+      previewLoading = false;
       messages = [...messages, { role: 'assistant', text: error instanceof Error ? error.message : 'The change preview could not be built.' }];
       return false;
     } finally { previewing = null; }
@@ -183,13 +193,19 @@
   function discardPreview() {
     if (window.confirm('Discard this disposable change preview and return to the current local site? The imported source will not be changed.')) {
       stagedPreview = null;
+      previewLoadingTitle = 'Loading current site';
+      previewLoading = true;
     }
   }
 
   function cancelDraft(draft) {
     if (draft.applied) return;
     if (window.confirm('Cancel this local change? Its disposable preview will be discarded and the current local site will remain unchanged.')) {
-      if (stagedPreview?.draft === draft) stagedPreview = null;
+      if (stagedPreview?.draft === draft) {
+        stagedPreview = null;
+        previewLoadingTitle = 'Loading current site';
+        previewLoading = true;
+      }
       drafts = drafts.filter((item) => item !== draft);
       messages = [...messages, { role: 'assistant', text: 'Cancelled the local change. The imported source was not modified.' }];
     }
@@ -202,10 +218,17 @@
     importing = true;
     try {
       const response = await fetch('/api/imports', { method: 'POST', headers: { 'content-type': 'application/zip', 'x-project-filename': file.name }, body: file });
-      const body = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(body.detail || 'Could not import this project archive.');
+      const responseText = await response.text();
+      let body = {};
+      try { body = JSON.parse(responseText); } catch { /* A proxy may return plain text or HTML. */ }
+      if (!response.ok) {
+        const backendDetail = (body && typeof body === 'object' ? body.detail : '') || responseText.trim().replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').slice(0, 300);
+        throw new Error(backendDetail || `Could not import this project archive (HTTP ${response.status}).`);
+      }
       importedSite = body;
       stagedPreview = null;
+      previewLoadingTitle = 'Loading local preview';
+      previewLoading = true;
       page = body.routes.includes('/') ? 'Home' : body.routes[0];
       messages = [...messages, { role: 'assistant', text: `${body.name} is available as a local, read-only import. I detected ${body.framework}, ${body.routes.length} route${body.routes.length === 1 ? '' : 's'}${body.post_route ? `, including ${body.post_route} for posts` : ''}, and prepared its local preview.` }];
     } catch (error) {
@@ -232,8 +255,8 @@
 
   <section class="preview"><div class="resizer" role="separator" aria-orientation="vertical" aria-label="Resize preview panel" on:pointerdown={resizePreview}></div>
     <header><span>{importedSite ? `${importedSite.name} · ${stagedPreview ? 'change preview' : importedSite.framework}` : 'No project imported'}</span><span class="no-deploy">No deploy target</span></header>
-    <div class="canvas">{#if importedSite?.preview_url}<div class="preview-tools"><a href={stagedPreview?.url ?? importedSite.preview_url} target="_blank" rel="noopener">Open local preview ↗</a>{#if stagedPreview}<button class="discard-preview" on:click={discardPreview}>Discard preview · show current site</button>{/if}</div><iframe class="site-frame" title={`${importedSite.name} local preview`} src={stagedPreview?.url ?? importedSite.preview_url}></iframe>{:else}<div class="empty-preview"><span>⌁</span><h2>Import a Svelte project to start previewing</h2><p>Choose a Svelte or SvelteKit ZIP from the sidebar. Its local browser preview will be ready after import.</p></div>{/if}</div>
-    <div class="drafts"><div class="draft-title"><div><p class="caption">{importedSite ? 'IMPORTED SITE' : 'PROPOSALS'}</p><h2>{importedSite ? 'Detected routes' : 'Local drafts'}</h2></div><span>{importedSite ? importedSite.routes.length : drafts.length}</span></div>{#if importedSite}<div class="routes" aria-label="Detected site routes">{#each importedSite.routes as route}<span>{route}</span>{/each}</div><p class="empty">Review the latest change, then preview or cancel it. Nothing touches the imported source until you apply it.</p>{:else if !drafts.length}<p class="empty">Your Foundry agent proposals will appear here. They are never applied automatically.</p>{/if}{#each drafts as draft}<article class="draft"><span>✓</span><div><b>{draft.label}</b><small>{draft.page} · {draft.applied ? 'applied locally' : 'local proposal'}</small><p class="change-summary">{shortDescription(draft.proposal)}</p><div class="draft-actions">{#if stagedPreview?.draft === draft && !draft.applied}<button class="apply-change" disabled={applying === draft} on:click={() => applyDraft(draft)}>{applying === draft ? 'Applying locally…' : 'Apply locally'}</button>{:else}<button class="preview-change" class:recommended={!draft.applied} disabled={previewing === draft || draft.applied || !draft.changes?.length} on:click={() => previewDraft(draft)}>{previewing === draft ? 'Building preview…' : draft.applied ? 'Applied locally' : 'Preview change'}</button>{/if}<button class="cancel-change" disabled={draft.applied} on:click={() => cancelDraft(draft)}>{draft.applied ? 'Change applied' : 'Cancel change'}</button></div></div></article>{/each}</div>
+    <div class="canvas">{#if importedSite?.preview_url}<div class="preview-tools"><a href={stagedPreview?.url ?? importedSite.preview_url} target="_blank" rel="noopener">Open local preview ↗</a>{#if stagedPreview}<button class="discard-preview" on:click={discardPreview}>Discard preview · show current site</button>{/if}</div><div class="frame-wrap"><iframe class="site-frame" title={`${importedSite.name} local preview`} src={stagedPreview?.url ?? importedSite.preview_url} on:load={() => previewLoading = false}></iframe>{#if previewLoading}<div class="preview-loading" role="status"><span class="signal-loader" aria-hidden="true"><i></i><i></i><i></i></span><b>{previewLoadingTitle}</b><small>Preparing the local site…</small></div>{/if}</div>{:else}<div class="empty-preview"><span>⌁</span><h2>Import a Svelte project to start previewing</h2><p>Choose a Svelte or SvelteKit ZIP from the sidebar. Its local browser preview will be ready after import.</p></div>{/if}</div>
+    <div class="drafts"><div class="draft-title"><div><p class="caption">{importedSite ? 'IMPORTED SITE' : 'PROPOSALS'}</p><h2>{importedSite ? 'Detected routes' : 'Local drafts'}</h2></div><span>{importedSite ? importedSite.routes.length : drafts.length}</span></div>{#if importedSite}<div class="routes" aria-label="Detected site routes">{#each importedSite.routes as route}<span>{route}</span>{/each}</div><p class="empty">Review the latest change, then preview or cancel it. Nothing touches the imported source until you apply it.</p>{:else if !drafts.length}<p class="empty">Your Gemini proposals will appear here. They are never applied automatically.</p>{/if}{#each drafts as draft}<article class="draft"><span>✓</span><div><b>{draft.label}</b><small>{draft.page} · {draft.applied ? 'applied locally' : 'local proposal'}</small><p class="change-summary">{shortDescription(draft.proposal)}</p><div class="draft-actions">{#if stagedPreview?.draft === draft && !draft.applied}<button class="apply-change" disabled={applying === draft} on:click={() => applyDraft(draft)}>{applying === draft ? 'Applying locally…' : 'Apply locally'}</button>{:else}<button class="preview-change" class:recommended={!draft.applied} disabled={previewing === draft || draft.applied || !draft.changes?.length} on:click={() => previewDraft(draft)}>{previewing === draft ? 'Building preview…' : draft.applied ? 'Applied locally' : 'Preview change'}</button>{/if}<button class="cancel-change" disabled={draft.applied} on:click={() => cancelDraft(draft)}>{draft.applied ? 'Change applied' : 'Cancel change'}</button></div></div></article>{/each}</div>
   </section>
 </main>
 
@@ -257,5 +280,6 @@
   .chat header,.preview header{height:88px;padding:18px 23px;border-bottom:3px solid #181818}.chat h1{font-size:25px;font-weight:900;line-height:1;letter-spacing:-.06em}.badge,.no-deploy{border:2px solid #181818;border-radius:0;background:#fffef9;color:#191919;font-weight:800}.no-deploy{background:#ffe86b}.conversation{padding:22px;gap:14px;background:#fdfcf7}.conversation article{max-width:95%}.message-text{border:2px solid #181818;border-radius:0;background:#fffef9;padding:11px 12px;box-shadow:3px 3px 0 #181818;font-weight:500}.conversation .user .message-text{background:#1a1a1a;border-color:#1a1a1a}.compose{padding:15px;border-top:3px solid #181818;background:#fdfcf7}.chips button{border:2px solid #181818;border-radius:0;background:#fffef9;color:#191919;font-weight:700}.chips button:hover{background:#ffe86b}.compose form{border:3px solid #181818;border-radius:0;box-shadow:3px 3px 0 #181818}.compose form button{border-radius:0;background:#ff552f;font-weight:900}.compose form button:disabled{background:#d6d2c4}
   .cms{padding:22px;background:#fdfcf7}.cms-intro{border:3px solid #181818;background:#ffe86b;padding:10px}.cms-intro b{font-weight:900}.cms input,.cms textarea{border:2px solid #181818;border-radius:0;background:#fffef9}.create-post{border:3px solid #181818;border-radius:0;background:#ff552f;box-shadow:3px 3px 0 #181818;font-weight:900}.open-staged{border:2px solid #181818;border-radius:0;background:#ffe86b;color:#191919}.cms>.post-notice{border:2px solid #181818;border-radius:0;background:#e8f4ff;color:#191919}.compose textarea{flex:1;min-width:0}.compose form button{margin-left:auto;flex:0 0 auto;align-self:flex-end}
   .preview{background:#f5f2e8}.preview header{background:#fffef9}.canvas{padding:18px}.preview-tools a{border:2px solid #181818;border-radius:0;background:#ff552f;box-shadow:3px 3px 0 #181818;font-weight:900}.discard-preview{border:2px solid #181818;border-radius:0;background:#fffef9;color:#191919;font-weight:800}.site-frame{border:3px solid #181818;box-shadow:5px 5px 0 #181818}.empty-preview{border:3px dashed #181818;border-radius:0;background:#fffef9;box-shadow:4px 4px 0 #181818}.drafts{margin:0 18px 18px;border:3px solid #181818;border-radius:0;background:#fffef9;padding:14px;box-shadow:4px 4px 0 #181818}.draft-title>span{border:2px solid #181818;border-radius:0;background:#ffe86b;font-weight:800}.routes span{border:2px solid #181818;border-radius:0;background:#fffef9;color:#191919;font-weight:700}.draft{border-top:2px solid #181818}.draft>span{border-radius:0;background:#ffe86b;color:#191919;font-weight:900}.preview-change,.apply-change,.cancel-change{border:2px solid #181818;border-radius:0;box-shadow:2px 2px 0 #181818;font-weight:900}.preview-change{background:#fffef9;color:#191919}.preview-change.recommended{border-color:#181818;background:#ffe86b;color:#191919;animation:none}.apply-change{background:#356cf4;color:#fff}.cancel-change{background:#ff552f;color:#fff;border-color:#181818}.draft-actions{gap:10px}
+  .frame-wrap{position:relative;min-height:320px}.preview-loading{position:absolute;inset:0;z-index:1;display:grid;place-content:center;justify-items:center;gap:9px;background:#171814ee;color:#fffef9;text-align:center}.preview-loading:before{content:'LOCAL PREVIEW';border:2px solid #ffe86b;background:#171814;padding:4px 7px;color:#ffe86b;font:900 10px ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:.08em}.preview-loading b{font-size:15px;font-weight:900}.preview-loading small{font:11px ui-monospace,SFMono-Regular,Menlo,monospace;color:#e5e1d1}.signal-loader{position:relative;width:50px;height:32px;border:3px solid #fffef9;background:#171814;box-shadow:4px 4px 0 #ff552f;overflow:hidden}.signal-loader:before{content:'···';position:absolute;inset:0;display:grid;place-items:center;color:#baff74;font:900 23px/1 ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:5px;animation:signal-blink .9s steps(2,end) infinite}.signal-loader i{display:none}@keyframes signal-blink{50%{opacity:.18}}
   @media(max-width:850px){main{padding:0}.chat{border:0}}
 </style>

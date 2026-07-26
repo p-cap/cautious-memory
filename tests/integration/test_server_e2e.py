@@ -13,6 +13,29 @@ def test_openapi_exposes_draft_endpoint() -> None:
     assert "post" in schema["paths"]["/api/drafts"]
 
 
+def test_cloud_run_imports_use_the_writable_tmp_directory(monkeypatch) -> None:
+    monkeypatch.setenv("K_SERVICE", "signal-studio")
+    monkeypatch.delenv("IMPORT_ROOT", raising=False)
+
+    assert fast_api_app._import_root() == fast_api_app.Path("/tmp/signal-studio-imports")
+
+
+def test_production_builder_ui_and_assets_are_served(tmp_path, monkeypatch) -> None:
+    dist = tmp_path / "dist"
+    assets = dist / "assets"
+    assets.mkdir(parents=True)
+    (dist / "index.html").write_text("<main>Signal Studio</main>")
+    (assets / "app.js").write_text("console.log('studio')")
+    monkeypatch.setattr(fast_api_app, "BUILDER_DIST", dist)
+    monkeypatch.setattr(fast_api_app, "ACTIVE_IMPORT_FILE", tmp_path / ".active-import")
+
+    client = TestClient(app)
+    assert "Signal Studio" in client.get("/").text
+    asset = client.get("/assets/app.js")
+    assert asset.status_code == 200
+    assert "immutable" in asset.headers["cache-control"]
+
+
 def test_preview_scopes_links_and_serves_static_clean_routes(tmp_path, monkeypatch) -> None:
     import_id = "preview-123"
     project_root = tmp_path / import_id / "source"
@@ -38,6 +61,71 @@ def test_preview_scopes_links_and_serves_static_clean_routes(tmp_path, monkeypat
     redirect = TestClient(app).get("/whoami", follow_redirects=False)
     assert redirect.status_code == 307
     assert redirect.headers["location"] == f"/previews/{import_id}/whoami"
+
+
+def test_unscoped_sveltekit_asset_uses_the_preview_referer(tmp_path, monkeypatch) -> None:
+    import_id = "b0c9168c-7d5d-4f74-806c-98e2f5ff59e7"
+    output = tmp_path / import_id / "source" / "build"
+    assets = output / "_app" / "immutable" / "assets"
+    assets.mkdir(parents=True)
+    (tmp_path / import_id / "source" / "package.json").write_text('{"name":"demo"}')
+    (output / "index.html").write_text("<main>Preview</main>")
+    (assets / "site.css").write_text("body { background: black; }")
+    monkeypatch.setattr(fast_api_app, "IMPORT_ROOT", tmp_path)
+
+    response = TestClient(app).get(
+        "/_app/immutable/assets/site.css",
+        headers={"referer": f"http://testserver/previews/{import_id}/"},
+    )
+
+    assert response.status_code == 200
+    assert "background: black" in response.text
+
+
+def test_workspace_can_be_hydrated_from_private_storage(tmp_path, monkeypatch) -> None:
+    class Blob:
+        def __init__(self, name: str, content: bytes = b"") -> None:
+            self.name = name
+            self.content = content
+
+        def delete(self) -> None:
+            objects.pop(self.name, None)
+
+        def upload_from_filename(self, filename) -> None:
+            self.content = filename.read_bytes()
+            objects[self.name] = self
+
+        def download_to_filename(self, filename) -> None:
+            filename.write_bytes(self.content)
+
+    class Bucket:
+        def list_blobs(self, prefix: str):
+            return [blob for name, blob in objects.items() if name.startswith(prefix)]
+
+        def blob(self, name: str) -> Blob:
+            return objects.setdefault(name, Blob(name))
+
+    objects: dict[str, Blob] = {}
+    import_id = "b0c9168c-7d5d-4f74-806c-98e2f5ff59e7"
+    workspace = tmp_path / import_id
+    source = workspace / "source"
+    source.mkdir(parents=True)
+    (source / "package.json").write_text('{"name":"saved"}')
+    (source / "build").mkdir()
+    (source / "build" / "index.html").write_text("<h1>Saved preview</h1>")
+    (source / "node_modules").mkdir()
+    (source / "node_modules" / "ignored.js").write_text("ignored")
+
+    monkeypatch.setattr(fast_api_app, "IMPORT_ROOT", tmp_path)
+    monkeypatch.setattr(fast_api_app, "_workspace_bucket", lambda: Bucket())
+    fast_api_app._persist_workspace(import_id)
+    assert all("node_modules" not in key for key in objects)
+
+    import shutil
+
+    shutil.rmtree(workspace)
+    assert fast_api_app._hydrate_workspace(import_id) is True
+    assert (tmp_path / import_id / "source" / "build" / "index.html").read_text() == "<h1>Saved preview</h1>"
 
 
 def test_site_context_includes_only_bounded_imported_source(tmp_path, monkeypatch) -> None:
@@ -113,3 +201,31 @@ def test_local_changes_require_an_exact_current_match(tmp_path) -> None:
     else:
         raise AssertionError("A replacement must match the current local source exactly.")
     assert page.read_text() == "<h1>Old</h1>\n<p>Keep</p>\n"
+
+
+def test_local_changes_can_apply_multiple_exact_edits_to_one_file(tmp_path) -> None:
+    route = tmp_path / "src" / "routes"
+    route.mkdir(parents=True)
+    page = route / "+page.svelte"
+    page.write_text('<a class="text-green">Brand</a>\n<a class="text-white">Link</a>\n')
+
+    fast_api_app._apply_local_changes(
+        tmp_path,
+        [
+            fast_api_app.LocalChange(
+                path="src/routes/+page.svelte",
+                search='class="text-green"',
+                replace='class="text-yellow"',
+            ),
+            fast_api_app.LocalChange(
+                path="src/routes/+page.svelte",
+                search='class="text-white"',
+                replace='class="text-yellow hover:text-yellow"',
+            ),
+        ],
+    )
+
+    assert page.read_text() == (
+        '<a class="text-yellow">Brand</a>\n'
+        '<a class="text-yellow hover:text-yellow">Link</a>\n'
+    )

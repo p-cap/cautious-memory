@@ -1,0 +1,50 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="690" viewBox="0 0 1200 690" role="img" aria-labelledby="title desc">
+  <title id="title">Signal Studio infrastructure on Google Cloud</title>
+  <desc id="desc">Users access Signal Studio through IAP-protected Cloud Run. Cloud Run serves the Svelte frontend and FastAPI backend, calls Vertex AI Gemini using a runtime service account, and persists private imported workspaces to Cloud Storage. Cloud Build deploys the container through Artifact Registry.</desc>
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto"><path d="M0 0L10 5 0 10z" fill="#181818"/></marker>
+    <style>.bg{fill:#f5f2e8}.panel{fill:#fffef9;stroke:#181818;stroke-width:4}.dark{fill:#181818;stroke:#181818;stroke-width:4}.yellow{fill:#ffe86b;stroke:#181818;stroke-width:4}.green{fill:#baff74;stroke:#181818;stroke-width:4}.line{fill:none;stroke:#181818;stroke-width:4;marker-end:url(#arrow)}.dash{fill:none;stroke:#181818;stroke-width:3;stroke-dasharray:9 7;marker-end:url(#arrow)}.h{font:900 23px Arial,Helvetica,sans-serif;fill:#181818}.t{font:700 15px Arial,Helvetica,sans-serif;fill:#181818}.s{font:700 12px Arial,Helvetica,sans-serif;fill:#5d5b54}.mono{font:700 12px monospace;fill:#181818}.light{fill:#fffef9}.accent{fill:#baff74}.cap{font:900 11px Arial,Helvetica,sans-serif;letter-spacing:1.7px;fill:#5d5b54}</style>
+  </defs>
+  <rect class="bg" width="1200" height="690"/>
+  <rect x="30" y="26" width="1140" height="76" class="dark"/>
+  <text x="58" y="61" class="light" style="font:900 28px Arial,Helvetica,sans-serif">SIGNAL STUDIO</text>
+  <text x="58" y="84" class="accent" style="font:700 13px monospace">GOOGLE CLOUD ARCHITECTURE · LOCAL-FIRST SVELTE WEBSITE BUILDER</text>
+  <rect x="940" y="45" width="198" height="35" class="yellow"/><text x="959" y="68" class="mono">p-cap-476219</text>
+  <text x="58" y="144" class="cap">ACCESS</text>
+  <rect x="58" y="160" width="230" height="128" class="panel"/>
+  <text x="79" y="197" class="h">Builder users</text><text x="79" y="225" class="t">Google identity</text><text x="79" y="250" class="s">Authorized group access</text><text x="79" y="272" class="mono">builderz@p-cap.ai</text>
+  <rect x="374" y="160" width="250" height="128" class="yellow"/>
+  <text x="395" y="197" class="h">Direct IAP</text><text x="395" y="225" class="t">Identity-Aware Proxy</text><text x="395" y="250" class="s">Authenticates and authorizes</text><text x="395" y="272" class="s">before application traffic</text>
+  <path d="M289 224H373" class="line"/><text x="306" y="207" class="mono">HTTPS</text>
+  <text x="58" y="356" class="cap">APPLICATION</text>
+  <rect x="58" y="372" width="566" height="238" class="dark"/>
+  <g aria-label="Cloud Run icon" transform="translate(536 387)">
+    <path d="M0 14L14 0H42L56 14V42L42 56H14L0 42Z" fill="#4285f4"/>
+    <path d="M14 12H42L48 18V38L42 44H14L8 38V18Z" fill="#fffef9"/>
+    <path d="M18 20H38V27H18ZM18 31H31V38H18Z" fill="#4285f4"/>
+    <circle cx="39" cy="34.5" r="4.5" fill="#34a853"/>
+  </g>
+  <text x="82" y="411" class="light" style="font:900 25px Arial,Helvetica,sans-serif">Cloud Run · us-central1</text><text x="82" y="436" class="accent" style="font:700 13px monospace">signal-studio</text>
+  <rect x="82" y="463" width="246" height="112" class="panel"/><text x="100" y="495" class="h">Svelte UI</text><text x="100" y="520" class="s">Chat, drafts, CMS,</text><text x="100" y="541" class="s">embedded previews</text>
+  <rect x="355" y="463" width="246" height="112" class="panel"/><text x="373" y="495" class="h">FastAPI</text><text x="373" y="520" class="s">ZIP import, source edits,</text><text x="373" y="541" class="s">preview builds and routing</text>
+  <path d="M499 289V371" class="line"/><text x="514" y="338" class="mono">authorized request</text>
+  <text x="705" y="144" class="cap">GOOGLE SERVICES</text>
+  <rect x="705" y="160" width="438" height="128" class="green"/>
+  <text x="728" y="197" class="h">Vertex AI · Gemini</text><text x="728" y="225" class="t">Direct model calls using ADC</text><text x="728" y="250" class="s">No API key stored in the app</text><text x="728" y="272" class="mono">runtime service account → Vertex AI User</text>
+  <path d="M625 479H704V224" class="line"/>
+  <rect x="705" y="372" width="438" height="238" class="panel"/>
+  <g aria-label="Cloud Storage bucket icon" transform="translate(1061 384)">
+    <path d="M28 0L53 14V43L28 57L3 43V14Z" fill="#fffef9" stroke="#4285f4" stroke-width="7" stroke-linejoin="round"/>
+    <path d="M4 14L28 28L52 14" fill="none" stroke="#ea4335" stroke-width="7" stroke-linejoin="round"/>
+    <path d="M28 28V55" fill="none" stroke="#34a853" stroke-width="7"/>
+    <path d="M4 43L28 29L52 43" fill="none" stroke="#fbbc04" stroke-width="7" stroke-linejoin="round"/>
+  </g>
+  <text x="728" y="411" class="h">Cloud Storage</text><text x="728" y="436" class="mono">signal-studio-imports-&lt;project-number&gt;</text>
+  <rect x="728" y="462" width="391" height="91" class="yellow"/><text x="747" y="493" class="t">Private imported workspaces</text><text x="747" y="518" class="s">Source archives + built local previews</text><text x="747" y="538" class="s">Uniform access · public access prevention · lifecycle cleanup</text>
+  <path d="M625 542H704" class="line"/>
+  <rect x="58" y="630" width="180" height="35" class="panel"/><text x="72" y="652" class="mono">deploy-gcp.sh</text>
+  <rect x="290" y="630" width="180" height="35" class="yellow"/><text x="327" y="652" class="mono">Cloud Build</text>
+  <rect x="522" y="630" width="210" height="35" class="panel"/><text x="543" y="652" class="mono">Artifact Registry</text>
+  <path d="M239 648H289" class="line"/><path d="M471 648H521" class="line"/><path d="M733 648H600V611" class="line"/>
+  <text x="788" y="653" class="s">Build and deploy path</text>
+</svg>

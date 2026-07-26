@@ -1,0 +1,6 @@
+project_id               = "YOUR_GCP_PROJECT_ID"
+region                   = "us-central1"
+iap_access_group         = "site-builder-editors@your-domain.example"
+vertex_ai_location       = "global"
+gemini_model             = "gemini-2.5-flash"
+import_retention_days    = 7
