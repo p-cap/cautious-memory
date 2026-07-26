@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="540" viewBox="0 0 960 540" role="img" aria-labelledby="title desc">
+  <title id="title">Signal Studio demo video placeholder</title>
+  <desc id="desc">Replace this image with a short GIF preview that links to the Signal Studio demo video.</desc>
+  <rect width="960" height="540" fill="#f5f2e8"/>
+  <rect x="24" y="24" width="912" height="492" fill="#fdfcf7" stroke="#181818" stroke-width="8"/>
+  <rect x="360" y="170" width="240" height="160" fill="#ffe86b" stroke="#181818" stroke-width="8"/>
+  <path d="M454 205L454 295L530 250Z" fill="#ff552f" stroke="#181818" stroke-width="8" stroke-linejoin="round"/>
+  <text x="480" y="385" text-anchor="middle" fill="#181818" font-family="Arial, Helvetica, sans-serif" font-size="30" font-weight="800">DEMO VIDEO PLACEHOLDER</text>
+  <text x="480" y="420" text-anchor="middle" fill="#56544d" font-family="Arial, Helvetica, sans-serif" font-size="18">Replace with a short walkthrough GIF</text>
+</svg>

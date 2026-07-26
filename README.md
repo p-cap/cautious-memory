@@ -7,6 +7,13 @@ and apply only the approved change to the imported local copy.
 
 ![Signal Studio interface](docs/studio-builder.svg)
 
+## Demo video
+
+<!-- Replace this placeholder with a short GIF that links to your full demo video. -->
+[![Watch the Signal Studio demo](docs/video-placeholder.svg)](YOUR_DEMO_VIDEO_URL)
+
+> Add your full demo-video URL in place of `YOUR_DEMO_VIDEO_URL`. A 30–45 second walkthrough showing import, chat, preview, and apply works well here.
+
 ## What it includes
 
 - Svelte UI with navigation, Gemini chat, route detection, proposal review, and a resizable local preview
