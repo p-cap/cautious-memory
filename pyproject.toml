@@ -6,8 +6,10 @@ authors = [
     {name = "Your Name", email = "your@email.com"},
 ]
 dependencies = [
-    "google-adk>=1.15.0,<2.0.0",
+    "azure-ai-projects>=2.1.0",
+    "fastapi>=0.115.0,<1.0.0",
     "python-dotenv>=1.0.0,<2.0.0",
+    "uvicorn[standard]>=0.30.0,<1.0.0",
 ]
 requires-python = ">=3.11,<3.14"
 
@@ -19,10 +21,6 @@ dev = [
     "nest-asyncio>=1.6.0,<2.0.0",
 ]
 
-[project.optional-dependencies]
-eval = [
-    "google-adk[eval]>=1.15.0,<2.0.0",
-]
 lint = [
     "ruff>=0.4.6,<1.0.0",
     "ty>=0.0.1a0",
@@ -86,4 +84,3 @@ asyncio_default_fixture_loop_scope = "function"
 
 [tool.hatch.build.targets.wheel]
 packages = ["app"]
-

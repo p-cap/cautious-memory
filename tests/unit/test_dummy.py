@@ -11,17 +11,8 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-import os
+def test_foundry_agent_uses_a_named_versioned_reference() -> None:
+    from app.agent import agent_label
 
-os.environ.setdefault("GOOGLE_CLOUD_PROJECT", "local-test-project")
-os.environ.setdefault("GOOGLE_CLOUD_LOCATION", "global")
-os.environ.setdefault("GOOGLE_GENAI_USE_ENTERPRISE", "True")
-
-
-def test_agent_instruction_preserves_draft_only_boundary() -> None:
-    from app.agent import root_agent
-
-    instruction = root_agent.instruction.lower()
-    assert "local draft" in instruction
-    assert "read-only site snapshot" in instruction
-    assert "untrusted data" in instruction
+    assert "website-builder" in agent_label()
+    assert "@" in agent_label()

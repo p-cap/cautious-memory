@@ -1,10 +1,6 @@
-"""API contract checks that do not make a Gemini request."""
+"""API contract checks that do not make a Foundry request."""
 
 import os
-
-os.environ.setdefault("GOOGLE_CLOUD_PROJECT", "local-test-project")
-os.environ.setdefault("GOOGLE_CLOUD_LOCATION", "global")
-os.environ.setdefault("GOOGLE_GENAI_USE_ENTERPRISE", "True")
 
 from fastapi.testclient import TestClient
 

@@ -1,7 +1,7 @@
 # Signal Studio — Svelte website builder & tech blogger
 
 Signal Studio is a local-first Svelte website builder and lightweight tech-blog
-authoring app. Import a Svelte or SvelteKit ZIP, use Gemini through a chat
+authoring app. Import a Svelte or SvelteKit ZIP, use a Microsoft Foundry agent through a chat
 interface to propose changes, preview each change in an isolated local build,
 and apply only the approved change to the imported local copy.
 
@@ -16,29 +16,27 @@ and apply only the approved change to the imported local copy.
 
 ## What it includes
 
-- Svelte UI with navigation, Gemini chat, route detection, proposal review, and a resizable local preview
+- Svelte UI with navigation, Foundry-agent chat, route detection, proposal review, and a resizable local preview
 - ZIP import for local Svelte/SvelteKit project inspection and preview builds
 - AI-assisted Svelte change proposals with disposable, isolated change previews
 - A Posts CMS that creates local blog post drafts with title, slug, excerpt, body, and publication date/time
 - Explicit **Preview change** then **Apply locally** workflow; no automatic publishing
-- FastAPI backend and Gemini integration using Application Default Credentials (ADC) only
+- FastAPI backend and Microsoft Foundry integration using Azure CLI / `DefaultAzureCredential`
 
-## Configure ADC
+## Configure Microsoft Foundry
 
 Create `.env` from `.env.example` in the project root and use real values:
 
 ```dotenv
-GOOGLE_CLOUD_PROJECT=your-google-cloud-project-id
-GOOGLE_CLOUD_LOCATION=global
-GOOGLE_GENAI_USE_ENTERPRISE=True
-GEMINI_MODEL=gemini-3.5-flash
+FOUNDRY_PROJECT_ENDPOINT=https://your-resource.services.ai.azure.com/api/projects/your-project
+FOUNDRY_AGENT_NAME=website-builder
+FOUNDRY_AGENT_VERSION=2
 ```
 
 Authenticate locally once:
 
 ```sh
-gcloud auth application-default login
-gcloud config set project your-google-cloud-project-id
+az login
 ```
 
 The `.env` file is ignored by Git. Stop and restart the API after changing it.
@@ -48,8 +46,12 @@ The `.env` file is ignored by Git. Stop and restart the API after changing it.
 Install Python dependencies:
 
 ```sh
-agents-cli install
+uv sync
 ```
+
+If this project already has a partial virtual environment, rebuild it with the
+same command before starting the API. This installs both FastAPI/Uvicorn and
+the Microsoft Foundry SDK into `.venv`.
 
 In terminal one, start the API:
 
@@ -66,7 +68,8 @@ npm run dev
 ```
 
 Open the displayed Vite URL, normally `http://localhost:5173`. Vite proxies
-`/api/drafts` to the local FastAPI service.
+`/api/drafts` to the local FastAPI service. The Foundry agent is invoked only
+by the backend, using your local Azure CLI identity via `DefaultAzureCredential`.
 
 ## Import a Svelte site
 
@@ -90,17 +93,11 @@ and `/contact` routes.
 
 ## Verify
 
-These commands validate the code without sending a Gemini request:
+These commands validate the code without sending a Foundry request:
 
 ```sh
 uv run pytest tests/unit tests/integration
 cd frontend && npm run build
-```
-
-Once ADC is configured, run the behavioral evaluation:
-
-```sh
-agents-cli eval run --evalset tests/eval/evalsets/basic.evalset.json
 ```
 
 ## Boundaries

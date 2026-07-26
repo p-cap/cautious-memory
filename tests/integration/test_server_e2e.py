@@ -1,11 +1,5 @@
 """Route-level checks for the local prototype server."""
 
-import os
-
-os.environ.setdefault("GOOGLE_CLOUD_PROJECT", "local-test-project")
-os.environ.setdefault("GOOGLE_CLOUD_LOCATION", "global")
-os.environ.setdefault("GOOGLE_GENAI_USE_ENTERPRISE", "True")
-
 from fastapi.testclient import TestClient
 
 from app import fast_api_app
@@ -59,6 +53,33 @@ def test_site_context_includes_only_bounded_imported_source(tmp_path, monkeypatc
     assert "package.json" in context
     assert "src/routes/whoami/+page.svelte" in context
     assert "About this imported site" in context
+
+
+def test_site_context_prioritizes_selected_page_components(tmp_path, monkeypatch) -> None:
+    import_id = "1c58d8b7-cbf2-4b85-818e-0aac694cece9"
+    source = tmp_path / import_id / "source"
+    routes = source / "src" / "routes"
+    lib = source / "src" / "lib"
+    routes.mkdir(parents=True)
+    lib.mkdir(parents=True)
+    (source / "package.json").write_text('{"name":"context-demo","dependencies":{"svelte":"^5"}}')
+    (routes / "+page.svelte").write_text('<script>import Nav from "$lib/Nav.svelte";</script><Nav />')
+    (lib / "Nav.svelte").write_text('<a class="text-[#00FF00]">Brand</a>')
+    monkeypatch.setattr(fast_api_app, "IMPORT_ROOT", tmp_path)
+
+    context = fast_api_app._site_context(import_id, "context-demo", "Home")
+    assert "src/routes/+page.svelte" in context
+    assert "src/lib/Nav.svelte" in context
+    assert "text-[#00FF00]" in context
+
+
+def test_rejects_wrapper_only_inherited_visual_change() -> None:
+    change = fast_api_app.LocalChange(
+        path="src/routes/+page.svelte",
+        search='<div class="m-2">',
+        replace='<div class="m-2 text-yellow-400">',
+    )
+    assert fast_api_app._has_ineffective_inherited_visual_change("change font to yellow", [change])
 
 
 def test_local_changes_limit_edits_to_existing_source_files(tmp_path) -> None:
