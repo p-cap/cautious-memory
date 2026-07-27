@@ -4,11 +4,15 @@
   let sending = false;
   let importing = false;
   let importedSite = null;
+  let uploadMetadata = null;
   let previewWidth = 560;
   let applying = null;
   let previewing = null;
   let previewLoading = false;
   let previewLoadingTitle = 'Loading preview';
+  let previewFrameVersion = 0;
+  let previewRefreshPending = false;
+  let previewLoadTimeout;
   let stagedPreview = null;
   let drafts = [];
   let postTitle = '';
@@ -17,6 +21,8 @@
   let postBody = '';
   let postPublishedAt = new Date().toISOString().slice(0, 16);
   let postNotice = '';
+  let creatingPostDraft = false;
+  let createdPostDraft = '';
   let messages = [{ role: 'assistant', text: 'Describe a Svelte change and I’ll prepare a local draft. Nothing is applied or published in this prototype.' }];
   const pages = ['Home', 'About'];
 
@@ -30,32 +36,118 @@
     return title.toLowerCase().trim().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
   }
 
+  function formatFileSize(bytes) {
+    if (!Number.isFinite(bytes) || bytes < 1024) return `${bytes || 0} B`;
+    const units = ['KB', 'MB', 'GB'];
+    const index = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)) - 1, units.length - 1);
+    return `${(bytes / (1024 ** (index + 1))).toFixed(index ? 1 : 0)} ${units[index]}`;
+  }
+
+  function formatUploadTime(value) {
+    return new Date(value).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' });
+  }
+
+  function formatDuration(milliseconds) {
+    if (milliseconds < 1000) return `${Math.round(milliseconds)} ms`;
+    return `${(milliseconds / 1000).toFixed(milliseconds < 10000 ? 1 : 0)} s`;
+  }
+
+  function previewFrameUrl(url) {
+    if (!url) return '';
+    return `${url}${url.includes('?') ? '&' : '?'}frame=${previewFrameVersion}`;
+  }
+
+  function reloadPreviewFrame() {
+    previewRefreshPending = true;
+    previewFrameVersion += 1;
+    if (previewLoadTimeout) window.clearTimeout(previewLoadTimeout);
+    previewLoadTimeout = window.setTimeout(() => {
+      previewRefreshPending = false;
+      previewLoading = false;
+    }, 4000);
+  }
+
+  function handlePreviewLoad() {
+    if (previewRefreshPending) {
+      previewRefreshPending = false;
+      if (previewLoadTimeout) window.clearTimeout(previewLoadTimeout);
+      previewLoading = false;
+      const loadedVersion = previewFrameVersion;
+      window.setTimeout(() => {
+        if (previewFrameVersion === loadedVersion) previewFrameVersion += 1;
+      }, 80);
+      return;
+    }
+    if (previewLoadTimeout) window.clearTimeout(previewLoadTimeout);
+    previewLoading = false;
+  }
+
   function updatePostTitle(event) {
     postTitle = event.currentTarget.value;
     if (!postSlug) postSlug = slugify(postTitle);
   }
 
+  function updatePostSlug(event) {
+    postSlug = slugify(event.currentTarget.value);
+  }
+
+  function apiErrorMessage(detail, fallback) {
+    if (typeof detail === 'string' && detail.trim()) return detail;
+    if (Array.isArray(detail)) {
+      const messages = detail
+        .map((issue) => {
+          if (!issue || typeof issue !== 'object') return '';
+          const field = Array.isArray(issue.loc) ? issue.loc.at(-1) : '';
+          return `${field ? `${field}: ` : ''}${issue.msg || ''}`.trim();
+        })
+        .filter(Boolean);
+      if (messages.length) return messages.join('. ');
+    }
+    if (detail && typeof detail === 'object' && typeof detail.message === 'string') return detail.message;
+    return fallback;
+  }
+
+  function postDraftFingerprint() {
+    return [postTitle, postSlug, postPublishedAt, postExcerpt, postBody].join('\u001f');
+  }
+
+  function resetPostForm() {
+    postTitle = '';
+    postSlug = '';
+    postPublishedAt = new Date().toISOString().slice(0, 16);
+    postExcerpt = '';
+    postBody = '';
+    createdPostDraft = '';
+    postNotice = 'Post applied locally. You can now create the next post.';
+  }
+
   async function createPostDraft() {
-    if (!postTitle.trim() || !postSlug.trim() || !postBody.trim()) return;
+    const normalizedSlug = slugify(postSlug);
+    if (normalizedSlug !== postSlug) postSlug = normalizedSlug;
+    const fingerprint = postDraftFingerprint();
+    if (!postTitle.trim() || !normalizedSlug || !postBody.trim() || creatingPostDraft || createdPostDraft === fingerprint) return;
+    creatingPostDraft = true;
     postNotice = '';
     let draft = null;
     try {
-      const response = await fetch('/api/posts/draft', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ import_id: importedSite?.import_id, title: postTitle, slug: postSlug, published_at: postPublishedAt, excerpt: postExcerpt, body: postBody }) });
+      const response = await fetch('/api/posts/draft', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ import_id: importedSite?.import_id, title: postTitle, slug: normalizedSlug, published_at: postPublishedAt, excerpt: postExcerpt, body: postBody }) });
       const body = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(body.detail || 'The local post draft could not be created.');
-      draft = { label: 'New post', page, proposal: body.proposal, changes: body.changes ?? [] };
+      if (!response.ok) throw new Error(apiErrorMessage(body.detail, 'The local post draft could not be created.'));
+      draft = { label: 'New post', kind: 'post', page, proposal: body.proposal, changes: body.changes ?? [] };
       drafts = [draft];
       stagedPreview = null;
       messages = [...messages, { role: 'assistant', text: body.proposal }];
+      if (draft.changes?.length) {
+        const previewReady = await previewDraft(draft, importedSite?.post_route);
+        postNotice = previewReady ? 'Your post preview is open on the right. Review it, then apply or cancel the change.' : 'The post draft was created, but its disposable preview could not be built.';
+      } else {
+        postNotice = 'A post draft was created, but it did not include a previewable local source change.';
+      }
+      createdPostDraft = fingerprint;
     } catch (error) {
       postNotice = error instanceof Error ? error.message : 'The local post draft could not be created.';
-      return;
-    }
-    if (draft.changes?.length) {
-      const previewReady = await previewDraft(draft, importedSite?.post_route);
-      postNotice = previewReady ? 'A disposable preview of this post is open on the right. Use Open staged post preview to inspect its temporary URL.' : 'The post draft was created, but its disposable preview could not be built.';
-    } else {
-      postNotice = 'A post draft was created, but it did not include a previewable local source change.';
+    } finally {
+      creatingPostDraft = false;
     }
   }
 
@@ -159,8 +251,9 @@
       if (!response.ok) throw new Error(body.detail || 'The local change could not be applied.');
       importedSite = { ...importedSite, preview_url: `${body.preview_url}?updated=${Date.now()}` };
       stagedPreview = null;
-      previewLoading = true;
+      reloadPreviewFrame();
       drafts = drafts.map((item) => item === draft ? { ...item, applied: true } : item);
+      if (draft.kind === 'post') resetPostForm();
       messages = [...messages, { role: 'assistant', text: 'Applied the change to the local imported source and rebuilt its preview. Nothing was committed or published.' }];
     } catch (error) {
       previewLoading = false;
@@ -180,7 +273,7 @@
       const baseUrl = body.preview_url.replace(/\/$/, '');
       const route = previewPath ? `/${previewPath.replace(/^\/+|\/+$/g, '')}` : '';
       stagedPreview = { draft, url: `${baseUrl}${route}/?previewed=${Date.now()}` };
-      previewLoading = true;
+      reloadPreviewFrame();
       messages = [...messages, { role: 'assistant', text: 'Built a disposable local preview of this proposal. Review it on the right before applying anything.' }];
       return true;
     } catch (error) {
@@ -195,6 +288,7 @@
       stagedPreview = null;
       previewLoadingTitle = 'Loading current site';
       previewLoading = true;
+      reloadPreviewFrame();
     }
   }
 
@@ -205,6 +299,7 @@
         stagedPreview = null;
         previewLoadingTitle = 'Loading current site';
         previewLoading = true;
+        reloadPreviewFrame();
       }
       drafts = drafts.filter((item) => item !== draft);
       messages = [...messages, { role: 'assistant', text: 'Cancelled the local change. The imported source was not modified.' }];
@@ -216,6 +311,7 @@
     const file = input.files?.[0];
     if (!file || importing) return;
     importing = true;
+    const importStartedAt = performance.now();
     try {
       const response = await fetch('/api/imports', { method: 'POST', headers: { 'content-type': 'application/zip', 'x-project-filename': file.name }, body: file });
       const responseText = await response.text();
@@ -226,9 +322,17 @@
         throw new Error(backendDetail || `Could not import this project archive (HTTP ${response.status}).`);
       }
       importedSite = body;
+      createdPostDraft = '';
+      uploadMetadata = {
+        filename: file.name,
+        size: file.size,
+        uploadedAt: new Date().toISOString(),
+        durationMs: performance.now() - importStartedAt,
+      };
       stagedPreview = null;
       previewLoadingTitle = 'Loading local preview';
       previewLoading = true;
+      reloadPreviewFrame();
       page = body.routes.includes('/') ? 'Home' : body.routes[0];
       messages = [...messages, { role: 'assistant', text: `${body.name} is available as a local, read-only import. I detected ${body.framework}, ${body.routes.length} route${body.routes.length === 1 ? '' : 's'}${body.post_route ? `, including ${body.post_route} for posts` : ''}, and prepared its local preview.` }];
     } catch (error) {
@@ -245,17 +349,18 @@
     <p class="caption">OPERATING SYSTEM FOR SITE CHANGES</p>
     <nav>{#each pages as item}<button class:active={page === item} on:click={() => page = item}><span>{item === 'Home' ? '⌂' : '□'}</span>{item}</button>{/each}<button class="posts-nav" class:active={page === importedSite?.post_route} disabled={!importedSite?.post_route} on:click={selectPosts}><span>▤</span><b>Posts</b>{#if importedSite?.post_route}<small>{importedSite.post_route}</small>{/if}</button></nav>
     <label class="import"><b>Import a project</b><span>{importedSite ? importedSite.name : 'Choose a Svelte/SvelteKit ZIP'}</span><input type="file" accept=".zip,application/zip" on:change={importProject} disabled={importing} />{#if importing}<em>Inspecting local archive…</em>{/if}</label>
+    {#if importedSite && uploadMetadata}<section class="import-metadata" aria-label="Imported project metadata"><p>IMPORTED ARCHIVE</p><b title={uploadMetadata.filename}>{uploadMetadata.filename}</b><dl><div class="upload-time"><dt>Upload time</dt><dd>{formatUploadTime(uploadMetadata.uploadedAt)}</dd></div><div><dt>Upload &amp; import</dt><dd>{formatDuration(uploadMetadata.durationMs)}</dd></div><div><dt>Archive size</dt><dd>{formatFileSize(uploadMetadata.size)}</dd></div><div><dt>Detected</dt><dd>{importedSite.framework}</dd></div><div><dt>Routes</dt><dd>{importedSite.routes.length} · {importedSite.preview_status}</dd></div></dl></section>{/if}
   </aside>
 
   <section class="chat">
     <header><div><h1>{page === importedSite?.post_route ? 'Create a post' : importedSite ? 'What would you like to explore?' : 'Import a project to start chatting'}</h1></div></header>
-    {#if page === importedSite?.post_route}<div class="cms"><div class="cms-intro"><b>Posts CMS</b><span>Target: {importedSite.post_route}</span></div><label>Title<input value={postTitle} on:input={updatePostTitle} placeholder="A clear post title" /></label><label>Slug<input bind:value={postSlug} placeholder="my-new-post" /></label><label>Published date &amp; time<input type="datetime-local" bind:value={postPublishedAt} /></label><label>Excerpt<textarea bind:value={postExcerpt} rows="2" placeholder="A short summary for the posts list"></textarea></label><label>Post body<textarea class="post-body" bind:value={postBody} rows="10" placeholder="Write the post content in Markdown…"></textarea></label><button class="create-post" disabled={sending || !postTitle.trim() || !postSlug.trim() || !postBody.trim()} on:click={createPostDraft}>{sending ? 'Creating local draft…' : 'Create local post draft'}</button>{#if postNotice}<p class="post-notice">{postNotice}</p>{/if}{#if stagedPreview}<a class="open-staged" href={stagedPreview.url} target="_blank" rel="noopener">Open staged post preview ↗</a>{/if}<p>Creates a reviewable local proposal. It will not publish or modify source automatically.</p></div>{:else}<div class="conversation">{#each messages as message}<article class:user={message.role === 'user'}><span class="avatar">{message.role === 'user' ? 'You' : 'S'}</span><div class="message-text">{@html renderMarkdown(message.text)}</div></article>{/each}{#if sending}<article><span class="avatar">S</span><div class="message-text thinking" role="status"><span class="thinking-label">Creating proposal</span><span class="thinking-dots" aria-hidden="true"><i></i><i></i><i></i></span><span class="thinking-scan" aria-hidden="true"></span></div></article>{/if}</div>
+    {#if page === importedSite?.post_route}<div class="cms"><div class="cms-intro"><b>Posts CMS</b><span>Target: {importedSite.post_route}</span></div><label>Title<input value={postTitle} on:input={updatePostTitle} placeholder="A clear post title" /></label><label>Slug<input value={postSlug} on:input={updatePostSlug} placeholder="my-new-post" /></label><label>Published date &amp; time<input type="datetime-local" bind:value={postPublishedAt} /></label><label>Excerpt<textarea bind:value={postExcerpt} rows="2" placeholder="A short summary for the posts list"></textarea></label><label>Post body<textarea class="post-body" bind:value={postBody} rows="10" placeholder="Write the post content in Markdown…"></textarea></label><button class="create-post" disabled={creatingPostDraft || createdPostDraft === postDraftFingerprint() || !postTitle.trim() || !postSlug.trim() || !postBody.trim()} on:click={createPostDraft}>{creatingPostDraft ? 'Creating post preview…' : createdPostDraft === postDraftFingerprint() ? 'Post draft preview created' : 'Preview post draft'}</button>{#if postNotice}<p class="post-notice">{postNotice}</p>{/if}<p>Creates a disposable post preview. It will not publish or modify source automatically.</p></div>{:else}<div class="conversation">{#each messages as message}<article class:user={message.role === 'user'}><span class="avatar">{message.role === 'user' ? 'You' : 'S'}</span><div class="message-text">{@html renderMarkdown(message.text)}</div></article>{/each}{#if sending}<article><span class="avatar">S</span><div class="message-text thinking" role="status"><span class="thinking-label">Creating proposal</span><span class="thinking-dots" aria-hidden="true"><i></i><i></i><i></i></span><span class="thinking-scan" aria-hidden="true"></span></div></article>{/if}</div>
     <div class="compose"><form on:submit|preventDefault={() => send()}><textarea bind:value={request} rows="2" disabled={!importedSite} placeholder={importedSite ? 'Describe a visual, content, or layout change…' : 'Import a Svelte project to enable chat'} on:keydown={(event) => event.key === 'Enter' && !event.shiftKey && (event.preventDefault(), send())}></textarea><button disabled={!importedSite || !request.trim() || sending}>Send</button></form></div>{/if}
   </section>
 
   <section class="preview"><div class="resizer" role="separator" aria-orientation="vertical" aria-label="Resize preview panel" on:pointerdown={resizePreview}></div>
     <header><span>{importedSite ? `${importedSite.name} · ${stagedPreview ? 'change preview' : importedSite.framework}` : 'No project imported'}</span><span class="no-deploy">No deploy target</span></header>
-    <div class="canvas">{#if importedSite?.preview_url}<div class="preview-tools"><a href={stagedPreview?.url ?? importedSite.preview_url} target="_blank" rel="noopener">Open local preview ↗</a>{#if stagedPreview}<button class="discard-preview" on:click={discardPreview}>Discard preview · show current site</button>{/if}</div><div class="frame-wrap"><iframe class="site-frame" title={`${importedSite.name} local preview`} src={stagedPreview?.url ?? importedSite.preview_url} on:load={() => previewLoading = false}></iframe>{#if previewLoading}<div class="preview-loading" role="status"><span class="signal-loader" aria-hidden="true"><i></i><i></i><i></i></span><b>{previewLoadingTitle}</b><small>Preparing the local site…</small></div>{/if}</div>{:else}<div class="empty-preview"><span>⌁</span><h2>Import a Svelte project to start previewing</h2><p>Choose a Svelte or SvelteKit ZIP from the sidebar. Its local browser preview will be ready after import.</p></div>{/if}</div>
+    <div class="canvas">{#if importedSite?.preview_url}<div class="preview-tools"><a href={stagedPreview?.url ?? importedSite.preview_url} target="_blank" rel="noopener">Open local preview ↗</a>{#if stagedPreview}<button class="discard-preview" on:click={discardPreview}>Discard preview · show current site</button>{/if}</div><div class="frame-wrap"><iframe class="site-frame" title={`${importedSite.name} local preview`} src={previewFrameUrl(stagedPreview?.url ?? importedSite.preview_url)} on:load={handlePreviewLoad}></iframe>{#if previewLoading}<div class="preview-loading" role="status"><span class="signal-loader" aria-hidden="true"><i></i><i></i><i></i></span><b>{previewLoadingTitle}</b><small>Preparing the local site…</small></div>{/if}</div>{:else}<div class="empty-preview"><span>⌁</span><h2>Import a Svelte project to start previewing</h2><p>Choose a Svelte or SvelteKit ZIP from the sidebar. Its local browser preview will be ready after import.</p></div>{/if}</div>
     <div class="drafts"><div class="draft-title"><div><p class="caption">{importedSite ? 'IMPORTED SITE' : 'PROPOSALS'}</p><h2>{importedSite ? 'Detected routes' : 'Local drafts'}</h2></div><span>{importedSite ? importedSite.routes.length : drafts.length}</span></div>{#if importedSite}<div class="routes" aria-label="Detected site routes">{#each importedSite.routes as route}<span>{route}</span>{/each}</div><p class="empty">Review the latest change, then preview or cancel it. Nothing touches the imported source until you apply it.</p>{:else if !drafts.length}<p class="empty">Your Gemini proposals will appear here. They are never applied automatically.</p>{/if}{#each drafts as draft}<article class="draft"><span>✓</span><div><b>{draft.label}</b><small>{draft.page} · {draft.applied ? 'applied locally' : 'local proposal'}</small><p class="change-summary">{shortDescription(draft.proposal)}</p><div class="draft-actions">{#if stagedPreview?.draft === draft && !draft.applied}<button class="apply-change" disabled={applying === draft} on:click={() => applyDraft(draft)}>{applying === draft ? 'Applying locally…' : 'Apply locally'}</button>{:else}<button class="preview-change" class:recommended={!draft.applied} disabled={previewing === draft || draft.applied || !draft.changes?.length} on:click={() => previewDraft(draft)}>{previewing === draft ? 'Building preview…' : draft.applied ? 'Applied locally' : 'Preview change'}</button>{/if}<button class="cancel-change" disabled={draft.applied} on:click={() => cancelDraft(draft)}>{draft.applied ? 'Change applied' : 'Cancel change'}</button></div></div></article>{/each}</div>
   </section>
 </main>
@@ -281,5 +386,6 @@
   .cms{padding:22px;background:#fdfcf7}.cms-intro{border:3px solid #181818;background:#ffe86b;padding:10px}.cms-intro b{font-weight:900}.cms input,.cms textarea{border:2px solid #181818;border-radius:0;background:#fffef9}.create-post{border:3px solid #181818;border-radius:0;background:#ff552f;box-shadow:3px 3px 0 #181818;font-weight:900}.open-staged{border:2px solid #181818;border-radius:0;background:#ffe86b;color:#191919}.cms>.post-notice{border:2px solid #181818;border-radius:0;background:#e8f4ff;color:#191919}.compose textarea{flex:1;min-width:0}.compose form button{margin-left:auto;flex:0 0 auto;align-self:flex-end}
   .preview{background:#f5f2e8}.preview header{background:#fffef9}.canvas{padding:18px}.preview-tools a{border:2px solid #181818;border-radius:0;background:#ff552f;box-shadow:3px 3px 0 #181818;font-weight:900}.discard-preview{border:2px solid #181818;border-radius:0;background:#fffef9;color:#191919;font-weight:800}.site-frame{border:3px solid #181818;box-shadow:5px 5px 0 #181818}.empty-preview{border:3px dashed #181818;border-radius:0;background:#fffef9;box-shadow:4px 4px 0 #181818}.drafts{margin:0 18px 18px;border:3px solid #181818;border-radius:0;background:#fffef9;padding:14px;box-shadow:4px 4px 0 #181818}.draft-title>span{border:2px solid #181818;border-radius:0;background:#ffe86b;font-weight:800}.routes span{border:2px solid #181818;border-radius:0;background:#fffef9;color:#191919;font-weight:700}.draft{border-top:2px solid #181818}.draft>span{border-radius:0;background:#ffe86b;color:#191919;font-weight:900}.preview-change,.apply-change,.cancel-change{border:2px solid #181818;border-radius:0;box-shadow:2px 2px 0 #181818;font-weight:900}.preview-change{background:#fffef9;color:#191919}.preview-change.recommended{border-color:#181818;background:#ffe86b;color:#191919;animation:none}.apply-change{background:#356cf4;color:#fff}.cancel-change{background:#ff552f;color:#fff;border-color:#181818}.draft-actions{gap:10px}
   .frame-wrap{position:relative;min-height:320px}.preview-loading{position:absolute;inset:0;z-index:1;display:grid;place-content:center;justify-items:center;gap:9px;background:#171814ee;color:#fffef9;text-align:center}.preview-loading:before{content:'LOCAL PREVIEW';border:2px solid #ffe86b;background:#171814;padding:4px 7px;color:#ffe86b;font:900 10px ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:.08em}.preview-loading b{font-size:15px;font-weight:900}.preview-loading small{font:11px ui-monospace,SFMono-Regular,Menlo,monospace;color:#e5e1d1}.signal-loader{position:relative;width:50px;height:32px;border:3px solid #fffef9;background:#171814;box-shadow:4px 4px 0 #ff552f;overflow:hidden}.signal-loader:before{content:'···';position:absolute;inset:0;display:grid;place-items:center;color:#baff74;font:900 23px/1 ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:5px;animation:signal-blink .9s steps(2,end) infinite}.signal-loader i{display:none}@keyframes signal-blink{50%{opacity:.18}}
+  .import-metadata{margin:12px 7px 0;border:2px solid #181818;background:#fffef9;padding:10px;box-shadow:3px 3px 0 #181818}.import-metadata p{margin:0 0 5px;font-size:9px;font-weight:900;letter-spacing:.1em}.import-metadata>b{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font:900 11px ui-monospace,SFMono-Regular,Menlo,monospace}.import-metadata dl{display:grid;grid-template-columns:1fr;gap:8px;margin:10px 0 0}.import-metadata dl div{min-width:0}.import-metadata dt{font-size:9px;font-weight:900;color:#5d5b54;text-transform:uppercase}.import-metadata dd{margin:2px 0 0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font:700 10px ui-monospace,SFMono-Regular,Menlo,monospace;color:#181818}.import-metadata .upload-time dd{white-space:normal;line-height:1.3}
   @media(max-width:850px){main{padding:0}.chat{border:0}}
 </style>

@@ -63,6 +63,23 @@ def test_preview_scopes_links_and_serves_static_clean_routes(tmp_path, monkeypat
     assert redirect.headers["location"] == f"/previews/{import_id}/whoami"
 
 
+def test_change_preview_scopes_stylesheet_once(tmp_path) -> None:
+    import_id = "b0c9168c-7d5d-4f74-806c-98e2f5ff59e7"
+    preview_id = "d70ac885-79db-4952-beaa-23e431ea8a18"
+    output_root = tmp_path / "build"
+    output_root.mkdir()
+    (output_root / "index.html").write_text(
+        '<link href="./_app/immutable/assets/site.css" rel="stylesheet">'
+    )
+
+    preview_base = f"/change-previews/{import_id}/{preview_id}"
+    fast_api_app._rewrite_preview_asset_paths(output_root, preview_base)
+
+    index = (output_root / "index.html").read_text()
+    assert f'href="{preview_base}/_app/immutable/assets/site.css"' in index
+    assert f'{preview_base}/{preview_base.lstrip("/")}' not in index
+
+
 def test_unscoped_sveltekit_asset_uses_the_preview_referer(tmp_path, monkeypatch) -> None:
     import_id = "b0c9168c-7d5d-4f74-806c-98e2f5ff59e7"
     output = tmp_path / import_id / "source" / "build"
@@ -80,6 +97,78 @@ def test_unscoped_sveltekit_asset_uses_the_preview_referer(tmp_path, monkeypatch
 
     assert response.status_code == 200
     assert "background: black" in response.text
+
+
+def test_unscoped_sveltekit_asset_uses_the_change_preview_referer(tmp_path, monkeypatch) -> None:
+    import_id = "b0c9168c-7d5d-4f74-806c-98e2f5ff59e7"
+    preview_id = "d70ac885-79db-4952-beaa-23e431ea8a18"
+    imported_source = tmp_path / import_id / "source"
+    imported_source.mkdir(parents=True)
+    (imported_source / "package.json").write_text('{"name":"demo"}')
+    output = tmp_path / import_id / ".change-previews" / preview_id / "source" / "build"
+    assets = output / "_app" / "immutable" / "assets"
+    assets.mkdir(parents=True)
+    source = output.parent
+    (source / "package.json").write_text('{"name":"demo"}')
+    (output / "index.html").write_text("<main>Change preview</main>")
+    (assets / "site.css").write_text("body { background: #171814; }")
+    monkeypatch.setattr(fast_api_app, "IMPORT_ROOT", tmp_path)
+
+    response = TestClient(app).get(
+        "/_app/immutable/assets/site.css",
+        headers={"referer": f"http://testserver/change-previews/{import_id}/{preview_id}/articles/"},
+    )
+
+    assert response.status_code == 200
+    assert "#171814" in response.text
+
+
+def test_change_preview_recovers_a_previously_doubled_asset_path(tmp_path, monkeypatch) -> None:
+    import_id = "b0c9168c-7d5d-4f74-806c-98e2f5ff59e7"
+    preview_id = "d70ac885-79db-4952-beaa-23e431ea8a18"
+    source = tmp_path / import_id / ".change-previews" / preview_id / "source"
+    output = source / "build"
+    assets = output / "_app" / "immutable" / "assets"
+    assets.mkdir(parents=True)
+    (tmp_path / import_id / "source").mkdir(parents=True)
+    (source / "package.json").write_text('{"name":"demo"}')
+    (output / "index.html").write_text("<main>Change preview</main>")
+    (assets / "site.css").write_text("body { background: #171814; }")
+    monkeypatch.setattr(fast_api_app, "IMPORT_ROOT", tmp_path)
+
+    response = TestClient(app).get(
+        f"/change-previews/{import_id}/{preview_id}/change-previews/{import_id}/{preview_id}/_app/immutable/assets/site.css"
+    )
+
+    assert response.status_code == 200
+    assert "#171814" in response.text
+
+
+def test_change_preview_restores_a_missing_asset_from_workspace_storage(tmp_path, monkeypatch) -> None:
+    import_id = "b0c9168c-7d5d-4f74-806c-98e2f5ff59e7"
+    preview_id = "d70ac885-79db-4952-beaa-23e431ea8a18"
+    source = tmp_path / import_id / ".change-previews" / preview_id / "source"
+    output = source / "build"
+    output.mkdir(parents=True)
+    (tmp_path / import_id / "source").mkdir(parents=True)
+    (source / "package.json").write_text('{"name":"demo"}')
+    (output / "index.html").write_text("<main>Change preview</main>")
+    monkeypatch.setattr(fast_api_app, "IMPORT_ROOT", tmp_path)
+
+    async def restore_asset(restored_import_id, relative_path) -> bool:
+        assert restored_import_id == import_id
+        restored = tmp_path / import_id / relative_path
+        restored.parent.mkdir(parents=True, exist_ok=True)
+        restored.write_text("body { background: #171814; }")
+        return True
+
+    monkeypatch.setattr(fast_api_app, "_ensure_workspace_file", restore_asset)
+    response = TestClient(app).get(
+        f"/change-previews/{import_id}/{preview_id}/_app/immutable/assets/site.css"
+    )
+
+    assert response.status_code == 200
+    assert "#171814" in response.text
 
 
 def test_workspace_can_be_hydrated_from_private_storage(tmp_path, monkeypatch) -> None:

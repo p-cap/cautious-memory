@@ -137,6 +137,32 @@ async def _save_workspace(import_id: str) -> None:
             detail="The imported project was built, but its private preview workspace could not be saved.",
         ) from error
 
+
+def _restore_workspace_file(import_id: str, relative_path: Path) -> bool:
+    """Restore one persisted workspace file when an instance has a partial copy."""
+    bucket = _workspace_bucket()
+    if bucket is None or relative_path.is_absolute() or ".." in relative_path.parts:
+        return False
+    destination = IMPORT_ROOT / import_id / relative_path
+    temporary = destination.with_name(f".{destination.name}.{uuid4().hex}.restore")
+    try:
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        bucket.blob(f"{_workspace_prefix(import_id)}{relative_path.as_posix()}").download_to_filename(temporary)
+        temporary.replace(destination)
+        return True
+    except Exception:
+        temporary.unlink(missing_ok=True)
+        return False
+
+
+async def _ensure_workspace_file(import_id: str, relative_path: Path) -> bool:
+    """Recover a missing preview asset from GCS without replacing the workspace."""
+    try:
+        return await asyncio.to_thread(_restore_workspace_file, import_id, relative_path)
+    except Exception:
+        logger.exception("Could not restore workspace file %s/%s", import_id, relative_path)
+        return False
+
 app = FastAPI(title="Studio Builder API", version="0.1.0")
 app.add_middleware(
     CORSMiddleware,
@@ -473,7 +499,7 @@ def _rewrite_preview_asset_paths(output_root: Path, preview_base: str) -> None:
             # Static SvelteKit exports contain links such as href="/whoami".
             # From an iframe those would escape to the builder origin.
             rewritten = re.sub(
-                r'(?P<attribute>href|action)=(?P<quote>["\'])/(?!_app/|previews/)(?P<path>[^"\']*)',
+                r'(?P<attribute>href|action)=(?P<quote>["\'])/(?!_app/|previews/|change-previews/)(?P<path>[^"\']*)',
                 lambda match: f"{match.group('attribute')}={match.group('quote')}{preview_base}/{match.group('path')}",
                 rewritten,
             )
@@ -850,6 +876,11 @@ async def serve_change_preview(import_id: str, preview_id: str, asset_path: str 
     output_root = _preview_output_root(IMPORT_ROOT / safe_import_id / ".change-previews" / safe_preview_id / "source")
     if output_root is None:
         raise HTTPException(status_code=404, detail="Change preview not found.")
+    # Older previews may have been written with their preview base duplicated
+    # in stylesheet URLs. Serve the intended asset while those drafts remain.
+    duplicate_base = f"change-previews/{safe_import_id}/{safe_preview_id}/"
+    if asset_path.startswith(duplicate_base):
+        asset_path = asset_path.removeprefix(duplicate_base)
     candidate = (output_root / asset_path).resolve()
     if output_root.resolve() not in candidate.parents and candidate != output_root.resolve():
         raise HTTPException(status_code=400, detail="Unsafe preview path.")
@@ -857,6 +888,8 @@ async def serve_change_preview(import_id: str, preview_id: str, asset_path: str 
         candidate = candidate / "index.html"
     if not candidate.is_file() and asset_path and not Path(asset_path).suffix:
         candidate = (output_root / f"{asset_path.rstrip('/')}.html").resolve()
+    if not candidate.is_file() and asset_path:
+        await _ensure_workspace_file(safe_import_id, candidate.relative_to(IMPORT_ROOT / safe_import_id))
     if not candidate.is_file():
         if asset_path:
             raise HTTPException(status_code=404, detail="Change preview asset not found.")
@@ -866,18 +899,31 @@ async def serve_change_preview(import_id: str, preview_id: str, asset_path: str 
 
 @app.get("/_app/{asset_path:path}", include_in_schema=False)
 async def serve_unscoped_preview_asset(request: Request, asset_path: str) -> FileResponse:
-    """Recover SvelteKit assets whose static build did not retain preview base."""
+    """Recover SvelteKit assets whose static build did not retain its preview base."""
     referer = request.headers.get("referer", "")
-    match = re.search(r"/previews/(?P<import_id>[0-9a-f-]{36})(?:/|$)", referer, flags=re.IGNORECASE)
-    if not match:
+    change_match = re.search(
+        r"/change-previews/(?P<import_id>[0-9a-f-]{36})/(?P<preview_id>[0-9a-f-]{36})(?:/|$)",
+        referer,
+        flags=re.IGNORECASE,
+    )
+    preview_match = re.search(r"/previews/(?P<import_id>[0-9a-f-]{36})(?:/|$)", referer, flags=re.IGNORECASE)
+    if not change_match and not preview_match:
         raise HTTPException(status_code=404, detail="Preview asset not found.")
     try:
+        match = change_match or preview_match
+        assert match is not None
         import_id = str(UUID(match.group("import_id")))
+        preview_id = str(UUID(change_match.group("preview_id"))) if change_match else None
     except ValueError as error:
         raise HTTPException(status_code=404, detail="Preview asset not found.") from error
     if not await _ensure_workspace(import_id):
         raise HTTPException(status_code=404, detail="Preview asset not found.")
-    output_root = _preview_output_root(IMPORT_ROOT / import_id / "source")
+    source_root = (
+        IMPORT_ROOT / import_id / ".change-previews" / preview_id / "source"
+        if preview_id
+        else IMPORT_ROOT / import_id / "source"
+    )
+    output_root = _preview_output_root(source_root)
     if output_root is None:
         raise HTTPException(status_code=404, detail="Preview has not finished building.")
     candidate = (output_root / "_app" / asset_path).resolve()
